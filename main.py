@@ -1,47 +1,33 @@
 from flask import Flask, render_template_string, request, jsonify, session, Response
 import requests
 import json
-import base64
-from datetime import datetime
 import uuid
 import os
 from dotenv import load_dotenv
 import time
-from threading import Thread
+from datetime import datetime
 import re
+from threading import Thread, Lock
+import queue
 
 load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or 'your-secret-key-here'
-app.config['PERMANENT_SESSION_LIFETIME'] = 3600 * 24 * 7  # أسبوع
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600 * 24 * 30  # شهر
 
 # إعدادات NVIDIA API
 NVIDIA_API_KEY = "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"
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 MODEL_NAME = "qwen/qwen3.5-122b-a10b"
 
-# تخزين المحادثات (في الإنتاج استخدم قاعدة بيانات)
+# تخزين المحادثات مع قفل للتزامن
 conversations = {}
+conversations_lock = Lock()
+active_streams = {}  # لتتبع التدفقات النشطة وإمكانية إيقافها
 
-def optimize_code_response(content):
-    """تحسين عرض الأكواد البرمجية"""
-    # اكتشاف كتل الأكواد وتحسين تنسيقها
-    def replace_code_block(match):
-        lang = match.group(1) or 'text'
-        code = match.group(2)
-        return f'```{lang}\n{code}\n```'
-    
-    # تحسين عرض الأكواد المضمنة
-    content = re.sub(r'`([^`]+)`', r'<code>\1</code>', content)
-    
-    # تحسين كتل الأكواد
-    content = re.sub(r'```(\w*)\n(.*?)```', replace_code_block, content, flags=re.DOTALL)
-    
-    return content
-
-def generate_stream_response(messages):
-    """توليد رد متدفق محسن وسريع جداً من NVIDIA API"""
+def generate_long_response(messages, stream_id, stop_flag):
+    """توليد ردود طويلة جداً مع إمكانية الإيقاف"""
     headers = {
         "Authorization": f"Bearer {NVIDIA_API_KEY}",
         "Accept": "text/event-stream",
@@ -52,37 +38,35 @@ def generate_stream_response(messages):
         "role": "system",
         "content": """أنت Soft Atlas AI، مساعد ذكي فائق التطور باللغة العربية الفصحى.
 
-القواعد الأساسية:
-1. قدم إجابات دقيقة وشاملة جداً جداً (لا تقل عن 1000 كلمة للمواضيع المعقدة)
-2. استخدم اللغة العربية الفصيحة السليمة 100%
-3. للمواضيع البرمجية:
-   - قدم شرحاً مفصلاً جداً مع أمثلة عملية
-   - وضح كل سطر من الكود
-   - اشرح أفضل الممارسات
-   - قدم تحسينات مقترحة
-   - اذكر الأخطاء الشائعة
-4. قسّم الإجابات إلى أقسام منظمة مع عناوين فرعية
-5. استخدم النقاط والقوائم للتوضيح
-6. قدم أمثلة واقعية وحديثة
-7. اشرح المفاهيم الصعبة ببساطة مع تشبيهات
-8. للمواضيع العلمية، قدم تفاصيل دقيقة مع المصادر
-9. للمواضيع التاريخية، اذكر التواريخ والأحداث بدقة
-10. استخدم تنسيق Markdown محسن مع ألوان للأكواد
-11. قدم إجابات موسوعية تغطي جميع جوانب السؤال
-12. إذا كان السؤال برمجياً، قدم الكود مع شرح تفصيلي وناتج التنفيذ"""
+تعليمات مهمة جداً:
+1. قدم إجابات موسوعية شاملة جداً (5000-10000 كلمة للمواضيع المعقدة)
+2. للمواضيع البرمجية:
+   - قدم كود كامل ومتشغل يصل لـ 5000 سطر إذا لزم الأمر
+   - اشرح كل جزء بالتفصيل الممل
+   - وضح جميع الدوال والكلاسات
+   - أضف تعليقات توضيحية على كل سطر
+   - قدم 10 أمثلة عملية على الأقل
+3. قسّم الإجابات الطويلة إلى أقسام واضحة
+4. استخدم تنسيق Markdown متقدم مع جداول ورسوم بيانية نصية
+5. قدم أمثلة بلغات برمجة متعددة (Python, JavaScript, Java, C++, C#, PHP, Ruby, Go, Rust, Swift, Kotlin, TypeScript)
+6. للمشاريع الكبيرة، قدم هيكل المشروع كاملاً
+7. اشرح أفضل الممارسات والأخطاء الشائعة
+8. قدم تحسينات أداء وأمان
+9. أضف روابط لمصادر تعلم إضافية
+10. استخدم اللغة العربية الفصحى 100%"""
     }
     
-    full_messages = [system_prompt] + messages[-50:]  # آخر 50 رسالة للسياق
+    full_messages = [system_prompt] + messages[-20:]  # سياق أكبر
     
     payload = {
         "model": MODEL_NAME,
         "messages": full_messages,
-        "max_tokens": 32768,  # أقصى طول للإجابة (مضاعف)
-        "temperature": 0.65,   # توازن أفضل بين الإبداع والدقة
-        "top_p": 0.92,
+        "max_tokens": 32768,  # أقصى طول
+        "temperature": 0.7,
+        "top_p": 0.95,
         "stream": True,
-        "frequency_penalty": 0.1,
-        "presence_penalty": 0.1
+        "frequency_penalty": 0.0,
+        "presence_penalty": 0.0
     }
     
     try:
@@ -91,11 +75,16 @@ def generate_stream_response(messages):
             headers=headers,
             json=payload,
             stream=True,
-            timeout=120  # زيادة timeout
+            timeout=300  # 5 دقائق timeout
         )
         
         if response.status_code == 200:
             for line in response.iter_lines():
+                # التحقق من طلب الإيقاف
+                if stop_flag and stop_flag.get('stopped', False):
+                    yield "**[تم إيقاف التوليد]**"
+                    break
+                    
                 if line:
                     line_text = line.decode('utf-8')
                     if line_text.startswith('data: '):
@@ -106,34 +95,31 @@ def generate_stream_response(messages):
                                 if 'choices' in json_data:
                                     delta = json_data['choices'][0].get('delta', {})
                                     if 'content' in delta:
-                                        content = delta['content']
-                                        # تحسين عرض الأكواد في الوقت الفعلي
-                                        if '```' in content:
-                                            content = optimize_code_response(content)
-                                        yield content
+                                        yield delta['content']
                             except:
                                 continue
         else:
             yield f"⚠️ خطأ في الاتصال: {response.status_code}"
             
     except Exception as e:
-        yield f"❌ حدث خطأ: {str(e)}"
+        yield f"❌ حدث خطأ: {str(e)}، جاري إعادة المحاولة..."
 
 @app.route('/')
 def index():
-    """الصفحة الرئيسية المحسنة"""
+    """الصفحة الرئيسية الفائقة"""
     if 'conversation_id' not in session:
         session['conversation_id'] = str(uuid.uuid4())
-        conversations[session['conversation_id']] = []
+        with conversations_lock:
+            conversations[session['conversation_id']] = []
     
     return render_template_string('''
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Soft Atlas AI - المساعد الذكي الفائق</title>
-    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Soft Atlas AI Pro - المساعد الفائق</title>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -151,232 +137,246 @@ def index():
             --primary-dark: #4f46e5;
             --secondary: #8b5cf6;
             --accent: #ec4899;
-            --dark: #0b1120;
-            --darker: #050914;
-            --light: #f8fafc;
-            --gray: #94a3b8;
-            --success: #10b981;
-            --warning: #f59e0b;
-            --danger: #ef4444;
+            --dark-bg: #0f172a;
+            --darker-bg: #020617;
+            --light-bg: #f8fafc;
+            --dark-text: #f1f5f9;
+            --light-text: #0f172a;
             --glass: rgba(255, 255, 255, 0.03);
             --glass-hover: rgba(255, 255, 255, 0.05);
-            --glass-border: rgba(255, 255, 255, 0.05);
-            --glass-border-hover: rgba(99, 102, 241, 0.3);
+            --border: rgba(255, 255, 255, 0.1);
+        }
+
+        [data-theme="light"] {
+            --dark-bg: #f8fafc;
+            --darker-bg: #f1f5f9;
+            --dark-text: #0f172a;
+            --light-text: #f8fafc;
+            --glass: rgba(0, 0, 0, 0.03);
+            --glass-hover: rgba(0, 0, 0, 0.05);
+            --border: rgba(0, 0, 0, 0.1);
         }
 
         body {
             font-family: 'Cairo', sans-serif;
-            background: var(--darker);
-            min-height: 100vh;
-            color: var(--light);
-            position: relative;
-            overflow-x: hidden;
-        }
-
-        /* خلفية متحركة */
-        body::before {
-            content: '';
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: 
-                radial-gradient(circle at 20% 30%, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
-                radial-gradient(circle at 80% 70%, rgba(139, 92, 246, 0.15) 0%, transparent 50%),
-                radial-gradient(circle at 40% 80%, rgba(236, 72, 153, 0.1) 0%, transparent 50%);
-            animation: gradientShift 15s ease infinite;
-            pointer-events: none;
-        }
-
-        @keyframes gradientShift {
-            0%, 100% { opacity: 0.5; }
-            50% { opacity: 1; }
-        }
-
-        .app-container {
-            position: relative;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            backdrop-filter: blur(20px);
-        }
-
-        /* Navbar محسّن */
-        .navbar {
-            background: rgba(5, 9, 20, 0.8);
-            backdrop-filter: blur(20px);
-            border-bottom: 1px solid var(--glass-border);
-            padding: 0.75rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            position: sticky;
-            top: 0;
-            z-index: 1000;
-        }
-
-        .navbar-brand {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .logo {
-            width: 45px;
-            height: 45px;
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: relative;
+            background: var(--darker-bg);
+            color: var(--dark-text);
+            transition: all 0.3s ease;
+            height: 100vh;
             overflow: hidden;
         }
 
-        .logo::before {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.3), transparent);
-            transform: rotate(45deg);
-            animation: shine 3s infinite;
-        }
-
-        @keyframes shine {
-            0% { transform: translateX(-100%) rotate(45deg); }
-            20%, 100% { transform: translateX(100%) rotate(45deg); }
-        }
-
-        .logo i {
-            font-size: 24px;
-            color: white;
-            position: relative;
-            z-index: 2;
-        }
-
-        .brand-text {
-            font-size: 1.5rem;
-            font-weight: 800;
-            background: linear-gradient(135deg, #fff, var(--gray));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            letter-spacing: -0.5px;
-        }
-
-        .navbar-menu {
+        .app {
+            height: 100vh;
             display: flex;
-            align-items: center;
-            gap: 1.5rem;
+            flex-direction: column;
         }
 
-        .nav-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            color: var(--gray);
-            text-decoration: none;
-            font-weight: 500;
-            padding: 0.5rem 1rem;
-            border-radius: 10px;
-            transition: all 0.3s;
-            cursor: pointer;
-        }
-
-        .nav-item:hover {
+        /* Navbar صغير وجميل */
+        .navbar {
             background: var(--glass);
-            color: white;
-        }
-
-        .nav-item.active {
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
-            color: white;
-        }
-
-        .nav-item i {
-            font-size: 1.1rem;
-        }
-
-        .nav-actions {
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--border);
+            padding: 0.5rem 1.5rem;
             display: flex;
             align-items: center;
-            gap: 12px;
+            justify-content: space-between;
+            height: 60px;
         }
 
-        .theme-toggle, .settings-toggle {
-            width: 45px;
-            height: 45px;
-            background: var(--glass);
-            border: 1px solid var(--glass-border);
-            border-radius: 12px;
+        .nav-left {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .menu-toggle {
+            width: 40px;
+            height: 40px;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: var(--gray);
+            background: var(--glass);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--dark-text);
             cursor: pointer;
             transition: all 0.3s;
         }
 
-        .theme-toggle:hover, .settings-toggle:hover {
-            background: var(--glass-hover);
+        .menu-toggle:hover {
+            background: var(--primary);
             color: white;
             border-color: var(--primary);
         }
 
-        /* Main Layout */
-        .main-layout {
+        .logo {
             display: flex;
-            flex: 1;
-            padding: 1.5rem;
-            gap: 1.5rem;
-            max-width: 1800px;
-            margin: 0 auto;
-            width: 100%;
+            align-items: center;
+            gap: 8px;
         }
 
-        /* Sidebar محسّن (أصغر حجماً) */
+        .logo-icon {
+            width: 35px;
+            height: 35px;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .logo-icon i {
+            color: white;
+            font-size: 18px;
+        }
+
+        .logo-text {
+            font-weight: 700;
+            font-size: 1.2rem;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-center {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: var(--glass);
+            padding: 0.25rem;
+            border-radius: 30px;
+            border: 1px solid var(--border);
+        }
+
+        .nav-tab {
+            padding: 0.4rem 1.2rem;
+            border-radius: 30px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.3s;
+            color: var(--dark-text);
+            opacity: 0.7;
+        }
+
+        .nav-tab:hover {
+            opacity: 1;
+            background: var(--glass-hover);
+        }
+
+        .nav-tab.active {
+            background: var(--primary);
+            color: white;
+            opacity: 1;
+        }
+
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .theme-toggle {
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--glass);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--dark-text);
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .theme-toggle:hover {
+            background: var(--primary);
+            color: white;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.85rem;
+            padding: 0.4rem 1rem;
+            background: var(--glass);
+            border-radius: 30px;
+            border: 1px solid var(--border);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #10b981;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.7; }
+        }
+
+        /* Main layout */
+        .main {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Sidebar مخفي افتراضياً */
         .sidebar {
             width: 280px;
-            background: rgba(5, 9, 20, 0.6);
-            backdrop-filter: blur(20px);
-            border: 1px solid var(--glass-border);
-            border-radius: 24px;
+            background: var(--glass);
+            backdrop-filter: blur(10px);
+            border-left: 1px solid var(--border);
             display: flex;
             flex-direction: column;
-            height: calc(100vh - 100px);
-            position: sticky;
-            top: 85px;
-            overflow: hidden;
+            transition: transform 0.3s ease;
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            z-index: 100;
+            transform: translateX(100%);
+        }
+
+        .sidebar.open {
+            transform: translateX(0);
         }
 
         .sidebar-header {
             padding: 1.5rem;
-            border-bottom: 1px solid var(--glass-border);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
-        .new-chat-btn {
-            width: 100%;
-            padding: 1rem;
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
-            border: none;
-            border-radius: 16px;
-            color: white;
-            font-size: 1rem;
+        .sidebar-header h3 {
+            font-size: 1.1rem;
             font-weight: 600;
-            cursor: pointer;
+        }
+
+        .close-sidebar {
+            width: 35px;
+            height: 35px;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 12px;
+            background: var(--glass);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            cursor: pointer;
             transition: all 0.3s;
         }
 
-        .new-chat-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px rgba(99, 102, 241, 0.4);
+        .close-sidebar:hover {
+            background: var(--primary);
+            color: white;
         }
 
         .conversations-list {
@@ -386,7 +386,7 @@ def index():
         }
 
         .conversation-item {
-            padding: 0.75rem;
+            padding: 1rem;
             background: var(--glass);
             border-radius: 12px;
             margin-bottom: 0.5rem;
@@ -396,216 +396,127 @@ def index():
         }
 
         .conversation-item:hover {
-            background: var(--glass-hover);
             border-color: var(--primary);
             transform: translateX(-5px);
         }
 
         .conversation-item.active {
-            background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(139, 92, 246, 0.15));
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(139, 92, 246, 0.2));
             border-color: var(--primary);
         }
 
-        .conv-preview {
-            font-size: 0.9rem;
-            font-weight: 500;
+        .conv-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .conv-title {
+            font-weight: 600;
+            font-size: 0.95rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 150px;
+        }
+
+        .conv-menu {
+            position: relative;
+        }
+
+        .conv-menu-btn {
+            background: none;
+            border: none;
+            color: var(--dark-text);
+            cursor: pointer;
+            padding: 0.25rem;
+            opacity: 0.7;
+        }
+
+        .conv-menu-btn:hover {
+            opacity: 1;
+        }
+
+        .conv-menu-dropdown {
+            position: absolute;
+            left: 0;
+            top: 100%;
+            background: var(--darker-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.25rem;
+            min-width: 120px;
+            display: none;
+            z-index: 10;
+        }
+
+        .conv-menu:hover .conv-menu-dropdown {
+            display: block;
+        }
+
+        .menu-item {
+            padding: 0.5rem;
+            font-size: 0.85rem;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .menu-item:hover {
+            background: var(--primary);
             color: white;
-            margin-bottom: 0.25rem;
+        }
+
+        .menu-item.delete:hover {
+            background: #ef4444;
+        }
+
+        .conv-preview {
+            font-size: 0.8rem;
+            color: var(--dark-text);
+            opacity: 0.7;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
 
-        .conv-meta {
-            display: flex;
-            justify-content: space-between;
+        .conv-date {
             font-size: 0.7rem;
-            color: var(--gray);
+            color: var(--dark-text);
+            opacity: 0.5;
+            margin-top: 0.25rem;
         }
 
-        /* Chat Area الرئيسي (كبير) */
+        /* Chat area الرئيسي */
         .chat-area {
             flex: 1;
             display: flex;
             flex-direction: column;
-            background: rgba(5, 9, 20, 0.4);
-            backdrop-filter: blur(20px);
-            border: 1px solid var(--glass-border);
-            border-radius: 24px;
             overflow: hidden;
-            height: calc(100vh - 100px);
-        }
-
-        .chat-header {
-            padding: 1.25rem 2rem;
-            border-bottom: 1px solid var(--glass-border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            background: rgba(5, 9, 20, 0.6);
-        }
-
-        .chat-info {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-
-        .model-badge {
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
-            padding: 0.5rem 1.25rem;
-            border-radius: 30px;
-            font-size: 0.9rem;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .model-badge i {
-            color: var(--warning);
-        }
-
-        .chat-stats {
-            display: flex;
-            gap: 20px;
-            color: var(--gray);
-            font-size: 0.9rem;
-        }
-
-        .chat-stats span {
-            display: flex;
-            align-items: center;
-            gap: 5px;
+            background: var(--darker-bg);
         }
 
         .messages-container {
             flex: 1;
             overflow-y: auto;
             padding: 2rem;
-            display: flex;
-            flex-direction: column;
-            gap: 1.5rem;
+            scroll-behavior: smooth;
         }
 
-        /* Welcome Screen محسّن */
-        .welcome-screen {
-            text-align: center;
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-
-        .welcome-icon {
-            width: 120px;
-            height: 120px;
-            margin: 0 auto 2rem;
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
-            border-radius: 40px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            animation: float 3s ease-in-out infinite;
-            box-shadow: 0 20px 40px rgba(99, 102, 241, 0.3);
-        }
-
-        @keyframes float {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-10px); }
-        }
-
-        .welcome-icon i {
-            font-size: 60px;
-            color: white;
-        }
-
-        .welcome-screen h1 {
-            font-size: 3rem;
-            font-weight: 800;
-            margin-bottom: 1rem;
-            background: linear-gradient(135deg, #fff, var(--primary), var(--secondary));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .welcome-screen p {
-            color: var(--gray);
-            font-size: 1.2rem;
-            margin-bottom: 3rem;
-        }
-
-        .features-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin: 2rem 0;
-        }
-
-        .feature-card {
-            background: var(--glass);
-            padding: 1.5rem;
-            border-radius: 20px;
-            border: 1px solid var(--glass-border);
-            transition: all 0.3s;
-        }
-
-        .feature-card:hover {
-            transform: translateY(-5px);
-            border-color: var(--primary);
-            background: var(--glass-hover);
-        }
-
-        .feature-card i {
-            font-size: 2rem;
-            color: var(--primary);
-            margin-bottom: 1rem;
-        }
-
-        .feature-card h3 {
-            font-size: 1.1rem;
-            margin-bottom: 0.5rem;
-        }
-
-        .feature-card p {
-            font-size: 0.9rem;
-            color: var(--gray);
-            margin: 0;
-        }
-
-        .suggestions {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.75rem;
-            justify-content: center;
-            margin: 2rem 0;
-        }
-
-        .suggestion-chip {
-            background: var(--glass);
-            padding: 0.75rem 1.5rem;
-            border-radius: 30px;
-            border: 1px solid var(--glass-border);
-            color: white;
-            cursor: pointer;
-            transition: all 0.3s;
-            font-size: 0.9rem;
-        }
-
-        .suggestion-chip:hover {
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
-            border-color: transparent;
-            transform: scale(1.05);
-        }
-
-        /* Message Styles محسّنة */
+        /* تنسيق الرسائل */
         .message {
             display: flex;
-            gap: 15px;
-            animation: slideIn 0.3s ease;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            animation: fadeIn 0.3s ease;
         }
 
-        @keyframes slideIn {
-            from { opacity: 0; transform: translateY(20px); }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
 
@@ -614,9 +525,9 @@ def index():
         }
 
         .message-avatar {
-            width: 45px;
-            height: 45px;
-            border-radius: 14px;
+            width: 40px;
+            height: 40px;
+            border-radius: 12px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -624,16 +535,11 @@ def index():
         }
 
         .message.user .message-avatar {
-            background: linear-gradient(135deg, var(--accent), var(--danger));
+            background: linear-gradient(135deg, var(--accent), #f43f5e);
         }
 
         .message.assistant .message-avatar {
             background: linear-gradient(135deg, var(--primary), var(--secondary));
-        }
-
-        .message-avatar i {
-            font-size: 22px;
-            color: white;
         }
 
         .message-content {
@@ -645,43 +551,39 @@ def index():
             display: flex;
             justify-content: space-between;
             margin-bottom: 0.5rem;
-            font-size: 0.9rem;
-            color: var(--gray);
+            font-size: 0.85rem;
+            opacity: 0.7;
         }
 
         .message.user .message-header {
             flex-direction: row-reverse;
         }
 
-        .sender-name {
-            font-weight: 600;
-            color: white;
-        }
-
         .message-text {
             background: var(--glass);
-            padding: 1.25rem 1.5rem;
-            border-radius: 20px;
-            border: 1px solid var(--glass-border);
-            color: white;
+            padding: 1.25rem;
+            border-radius: 16px;
+            border: 1px solid var(--border);
             line-height: 1.8;
-            font-size: 1rem;
             overflow-x: auto;
         }
 
         .message.user .message-text {
             background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white;
             border: none;
         }
 
-        /* Code Highlighting محسّن */
+        /* تنسيق الكود */
         .message-text pre {
-            background: var(--darker) !important;
+            background: var(--darker-bg) !important;
             border-radius: 12px;
             padding: 1rem;
             margin: 1rem 0;
-            border: 1px solid var(--glass-border);
+            border: 1px solid var(--border);
             position: relative;
+            max-height: 500px;
+            overflow: auto;
         }
 
         .message-text code {
@@ -689,30 +591,22 @@ def index():
             font-size: 0.9rem;
         }
 
-        .message-text pre code {
-            color: #d4d4d4;
-        }
-
-        .message-text .hljs {
-            background: transparent !important;
-        }
-
-        .copy-code-btn {
+        .copy-btn {
             position: absolute;
-            top: 10px;
-            right: 10px;
-            background: rgba(0,0,0,0.5);
-            border: none;
-            color: white;
-            padding: 5px 10px;
-            border-radius: 5px;
-            cursor: pointer;
+            top: 0.5rem;
+            right: 0.5rem;
+            background: var(--glass);
+            border: 1px solid var(--border);
+            color: var(--dark-text);
+            padding: 0.25rem 0.5rem;
+            border-radius: 6px;
             font-size: 0.8rem;
+            cursor: pointer;
             opacity: 0;
             transition: opacity 0.3s;
         }
 
-        pre:hover .copy-code-btn {
+        pre:hover .copy-btn {
             opacity: 1;
         }
 
@@ -720,15 +614,14 @@ def index():
             display: flex;
             gap: 0.5rem;
             margin-top: 0.5rem;
-            padding-right: 0.5rem;
         }
 
-        .message-actions button {
+        .action-btn {
             background: var(--glass);
-            border: 1px solid var(--glass-border);
-            color: var(--gray);
-            padding: 0.4rem 1rem;
-            border-radius: 8px;
+            border: 1px solid var(--border);
+            color: var(--dark-text);
+            padding: 0.25rem 1rem;
+            border-radius: 6px;
             font-size: 0.8rem;
             cursor: pointer;
             transition: all 0.3s;
@@ -737,426 +630,215 @@ def index():
             gap: 5px;
         }
 
-        .message-actions button:hover {
+        .action-btn:hover {
             background: var(--primary);
             color: white;
             border-color: var(--primary);
         }
 
-        /* Input Area محسّن (أصغر حجماً) */
+        .action-btn.stop {
+            background: #ef4444;
+            color: white;
+            border-color: #ef4444;
+        }
+
+        /* Input area صغير وجميل */
         .input-container {
-            padding: 1.25rem 2rem;
-            background: rgba(5, 9, 20, 0.8);
-            backdrop-filter: blur(20px);
-            border-top: 1px solid var(--glass-border);
+            padding: 1rem 2rem;
+            background: var(--glass);
+            border-top: 1px solid var(--border);
         }
 
         .input-wrapper {
             display: flex;
-            gap: 12px;
-            background: var(--glass);
+            gap: 1rem;
+            align-items: flex-end;
+            background: var(--darker-bg);
             border-radius: 20px;
-            padding: 0.25rem;
-            border: 1px solid var(--glass-border);
+            padding: 0.5rem;
+            border: 1px solid var(--border);
             transition: all 0.3s;
         }
 
         .input-wrapper:focus-within {
             border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+            box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
         }
 
-        .input-wrapper textarea {
+        textarea {
             flex: 1;
             background: transparent;
             border: none;
-            padding: 0.75rem 1.25rem;
-            color: white;
+            padding: 0.75rem 1rem;
+            color: var(--dark-text);
             font-family: 'Cairo', sans-serif;
             font-size: 0.95rem;
             resize: none;
-            max-height: 100px;
+            max-height: 120px;
         }
 
-        .input-wrapper textarea:focus {
+        textarea:focus {
             outline: none;
         }
 
-        .input-wrapper textarea::placeholder {
-            color: var(--gray);
-            opacity: 0.5;
+        .input-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
 
-        .send-btn {
-            width: 45px;
-            height: 45px;
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
+        .input-btn {
+            width: 40px;
+            height: 40px;
             border: none;
-            border-radius: 16px;
-            color: white;
+            border-radius: 12px;
+            background: var(--glass);
+            color: var(--dark-text);
             cursor: pointer;
             transition: all 0.3s;
-            font-size: 1.1rem;
-            margin: 0.25rem;
+            border: 1px solid var(--border);
         }
 
-        .send-btn:hover:not(:disabled) {
-            transform: scale(1.05);
-            box-shadow: 0 5px 15px rgba(99, 102, 241, 0.4);
+        .input-btn:hover:not(:disabled) {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
         }
 
-        .send-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
+        .input-btn.send {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white;
+            border: none;
         }
 
         .input-footer {
             display: flex;
             justify-content: space-between;
-            margin-top: 0.75rem;
-            color: var(--gray);
-            font-size: 0.8rem;
+            margin-top: 0.5rem;
+            font-size: 0.75rem;
+            opacity: 0.5;
         }
 
+        /* Loading indicator */
         .typing-indicator {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 5px;
+            padding: 0.5rem;
         }
 
-        .typing-indicator i {
-            color: var(--primary);
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-        }
-
-        /* Loading Dots محسّن */
-        .loading-dots {
+        .typing-dots {
             display: flex;
-            gap: 8px;
-            padding: 1rem;
-            background: var(--glass);
-            border-radius: 20px;
-            border: 1px solid var(--glass-border);
+            gap: 3px;
         }
 
-        .loading-dots span {
-            width: 10px;
-            height: 10px;
-            background: var(--primary);
-            border-radius: 50%;
-            animation: bounce 1.4s infinite ease-in-out;
-        }
-
-        .loading-dots span:nth-child(2) {
-            background: var(--secondary);
-            animation-delay: 0.2s;
-        }
-
-        .loading-dots span:nth-child(3) {
-            background: var(--accent);
-            animation-delay: 0.4s;
-        }
-
-        @keyframes bounce {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-10px); }
-        }
-
-        /* Scrollbar محسّن */
-        ::-webkit-scrollbar {
+        .typing-dots span {
             width: 6px;
             height: 6px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: var(--glass);
-        }
-
-        ::-webkit-scrollbar-thumb {
             background: var(--primary);
-            border-radius: 3px;
+            border-radius: 50%;
+            animation: typingBounce 1s infinite;
         }
 
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--secondary);
+        .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes typingBounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); }
         }
 
-        /* Responsive Design متقدم */
-        @media (max-width: 1200px) {
-            .features-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-        }
-
-        @media (max-width: 992px) {
-            .sidebar {
-                width: 240px;
-            }
-            
-            .welcome-screen h1 {
-                font-size: 2.5rem;
-            }
-        }
-
+        /* Responsive */
         @media (max-width: 768px) {
-            .main-layout {
-                flex-direction: column;
-                padding: 1rem;
+            .nav-center {
+                display: none;
             }
             
             .sidebar {
                 width: 100%;
-                height: auto;
-                position: static;
-            }
-            
-            .navbar {
-                padding: 0.75rem 1rem;
-            }
-            
-            .brand-text {
-                font-size: 1.2rem;
-            }
-            
-            .nav-item span {
-                display: none;
-            }
-            
-            .chat-area {
-                height: calc(100vh - 200px);
-            }
-            
-            .welcome-screen h1 {
-                font-size: 2rem;
             }
             
             .message-content {
                 max-width: 100%;
             }
             
-            .features-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        @media (max-width: 480px) {
-            .navbar {
-                flex-wrap: wrap;
-            }
-            
-            .navbar-menu {
-                order: 3;
-                width: 100%;
-                justify-content: center;
-                margin-top: 0.5rem;
-            }
-            
-            .chat-header {
-                flex-direction: column;
-                gap: 0.5rem;
-                text-align: center;
-            }
-            
-            .chat-stats {
-                flex-wrap: wrap;
-                justify-content: center;
-            }
-            
             .input-container {
                 padding: 1rem;
             }
         }
-
-        /* Animations إضافية */
-        .pulse {
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-
-        .glow {
-            animation: glow 2s infinite;
-        }
-
-        @keyframes glow {
-            0%, 100% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.3); }
-            50% { box-shadow: 0 0 40px rgba(99, 102, 241, 0.6); }
-        }
-
-        /* Tooltips */
-        [data-tooltip] {
-            position: relative;
-            cursor: pointer;
-        }
-
-        [data-tooltip]:before {
-            content: attr(data-tooltip);
-            position: absolute;
-            bottom: 100%;
-            left: 50%;
-            transform: translateX(-50%);
-            padding: 0.5rem 1rem;
-            background: var(--darker);
-            color: white;
-            border-radius: 8px;
-            font-size: 0.8rem;
-            white-space: nowrap;
-            border: 1px solid var(--glass-border);
-            opacity: 0;
-            visibility: hidden;
-            transition: all 0.3s;
-            pointer-events: none;
-            z-index: 1000;
-        }
-
-        [data-tooltip]:hover:before {
-            opacity: 1;
-            visibility: visible;
-            bottom: 120%;
-        }
     </style>
 </head>
-<body>
-    <div class="app-container">
-        <!-- Navbar محسّن -->
-        <nav class="navbar">
-            <div class="navbar-brand">
-                <div class="logo">
-                    <i class="fas fa-brain"></i>
+<body data-theme="dark">
+    <div class="app">
+        <!-- Navbar صغير وجميل -->
+        <div class="navbar">
+            <div class="nav-left">
+                <div class="menu-toggle" onclick="toggleSidebar()">
+                    <i class="fas fa-bars"></i>
                 </div>
-                <span class="brand-text">Soft Atlas AI</span>
+                <div class="logo">
+                    <div class="logo-icon">
+                        <i class="fas fa-brain"></i>
+                    </div>
+                    <span class="logo-text">Soft Atlas Pro</span>
+                </div>
             </div>
             
-            <div class="navbar-menu">
-                <a class="nav-item active" onclick="switchTab('chat')">
-                    <i class="fas fa-comment"></i>
-                    <span>محادثة</span>
-                </a>
-                <a class="nav-item" onclick="switchTab('code')">
-                    <i class="fas fa-code"></i>
-                    <span>مبرمج</span>
-                </a>
-                <a class="nav-item" onclick="switchTab('analyze')">
-                    <i class="fas fa-chart-line"></i>
-                    <span>تحليل</span>
-                </a>
-                <a class="nav-item" onclick="switchTab('write')">
-                    <i class="fas fa-pen"></i>
-                    <span>كتابة</span>
-                </a>
+            <div class="nav-center">
+                <div class="nav-tab active" onclick="switchTab('chat')">
+                    <i class="fas fa-comment"></i> محادثة
+                </div>
+                <div class="nav-tab" onclick="switchTab('code')">
+                    <i class="fas fa-code"></i> برمجة
+                </div>
+                <div class="nav-tab" onclick="switchTab('analyze')">
+                    <i class="fas fa-chart-line"></i> تحليل
+                </div>
             </div>
             
-            <div class="nav-actions">
-                <div class="theme-toggle" onclick="toggleTheme()" data-tooltip="تغيير المظهر">
+            <div class="nav-right">
+                <div class="status">
+                    <span class="status-dot"></span>
+                    <span>متصل</span>
+                </div>
+                <div class="theme-toggle" onclick="toggleTheme()">
                     <i class="fas fa-moon"></i>
                 </div>
-                <div class="settings-toggle" onclick="openSettings()" data-tooltip="الإعدادات">
-                    <i class="fas fa-cog"></i>
-                </div>
             </div>
-        </nav>
-
-        <!-- Main Layout -->
-        <div class="main-layout">
-            <!-- Sidebar (سجل المحادثات) -->
-            <div class="sidebar">
+        </div>
+        
+        <!-- Main content -->
+        <div class="main">
+            <!-- Sidebar للمحادثات المسجلة -->
+            <div class="sidebar" id="sidebar">
                 <div class="sidebar-header">
-                    <button class="new-chat-btn" onclick="newConversation()">
-                        <i class="fas fa-plus"></i>
-                        محادثة جديدة
+                    <h3><i class="fas fa-history"></i> المحادثات</h3>
+                    <div class="close-sidebar" onclick="toggleSidebar()">
+                        <i class="fas fa-times"></i>
+                    </div>
+                </div>
+                <div class="sidebar-header" style="padding-top: 0;">
+                    <button class="action-btn" onclick="newConversation()" style="width: 100%;">
+                        <i class="fas fa-plus"></i> محادثة جديدة
                     </button>
                 </div>
                 <div class="conversations-list" id="conversationsList">
                     <!-- تضاف المحادثات هنا -->
                 </div>
             </div>
-
-            <!-- Chat Area الرئيسي -->
+            
+            <!-- Chat area -->
             <div class="chat-area">
-                <div class="chat-header">
-                    <div class="chat-info">
-                        <div class="model-badge">
-                            <i class="fas fa-crown"></i>
-                            Qwen 3.5 122B
-                        </div>
-                        <div class="chat-stats">
-                            <span><i class="fas fa-bolt"></i> سرعة فائقة</span>
-                            <span><i class="fas fa-code"></i> 50+ لغة</span>
-                            <span><i class="fas fa-globe"></i> عربية فصحى</span>
-                        </div>
-                    </div>
-                    <div class="chat-actions">
-                        <span class="online-indicator">
-                            <i class="fas fa-circle" style="color: var(--success); font-size: 0.6rem;"></i>
-                            متصل
-                        </span>
-                    </div>
-                </div>
-
                 <div class="messages-container" id="messagesContainer">
-                    <!-- Welcome Screen -->
-                    <div class="welcome-screen" id="welcomeMessage">
-                        <div class="welcome-icon">
-                            <i class="fas fa-robot"></i>
-                        </div>
-                        <h1>Soft Atlas AI</h1>
-                        <p>أقوى مساعد ذكي في العالم العربي - إجابات شاملة ودقيقة جداً</p>
-                        
-                        <div class="features-grid">
-                            <div class="feature-card">
-                                <i class="fas fa-bolt"></i>
-                                <h3>سرعة خارقة</h3>
-                                <p>أسرع استجابة في العالم العربي</p>
-                            </div>
-                            <div class="feature-card">
-                                <i class="fas fa-code"></i>
-                                <h3>برمجة متقدمة</h3>
-                                <p>شرح تفصيلي مع أمثلة عملية</p>
-                            </div>
-                            <div class="feature-card">
-                                <i class="fas fa-language"></i>
-                                <h3>عربية فصحى</h3>
-                                <p>لغة عربية سليمة 100%</p>
-                            </div>
-                            <div class="feature-card">
-                                <i class="fas fa-brain"></i>
-                                <h3>ذكاء فائق</h3>
-                                <p>تحليل عميق وتفكير منطقي</p>
-                            </div>
-                        </div>
-
-                        <div class="suggestions">
-                            <span class="suggestion-chip" onclick="setQuestion('اكتب برنامج بلغة Python لحساب الأعداد الأولية مع شرح تفصيلي')">
-                                <i class="fas fa-code"></i> برنامج بايثون
-                            </span>
-                            <span class="suggestion-chip" onclick="setQuestion('اشرح الذكاء الاصطناعي التوليدي بالتفصيل مع الأمثلة')">
-                                <i class="fas fa-robot"></i> الذكاء الاصطناعي
-                            </span>
-                            <span class="suggestion-chip" onclick="setQuestion('كيف تبني تطبيق ويب كامل باستخدام React و Node.js؟')">
-                                <i class="fas fa-globe"></i> تطبيق ويب كامل
-                            </span>
-                            <span class="suggestion-chip" onclick="setQuestion('قارن بين التعلم العميق والتعلم الآلي مع أمثلة')">
-                                <i class="fas fa-chart-line"></i> تعلم عميق vs تعلم آلي
-                            </span>
-                            <span class="suggestion-chip" onclick="setQuestion('اشرح خوارزميات التشفير الحديثة بالتفصيل')">
-                                <i class="fas fa-lock"></i> التشفير
-                            </span>
-                            <span class="suggestion-chip" onclick="setQuestion('ما هي أفضل ممارسات أمان تطبيقات الويب؟')">
-                                <i class="fas fa-shield"></i> أمن المعلومات
-                            </span>
-                        </div>
+                    <!-- رسالة الترحيب -->
+                    <div style="text-align: center; padding: 3rem; opacity: 0.7;">
+                        <i class="fas fa-robot" style="font-size: 4rem; margin-bottom: 1rem;"></i>
+                        <h2>مرحباً بك في Soft Atlas Pro</h2>
+                        <p>المساعد الذكي الفائق - أجوبة طويلة جداً، أكود حتى 5000 سطر</p>
                     </div>
                 </div>
-
-                <!-- Input Area (أصغر حجماً) -->
+                
+                <!-- Input area صغير وجميل -->
                 <div class="input-container">
                     <div class="input-wrapper">
                         <textarea 
@@ -1165,101 +847,41 @@ def index():
                             rows="1"
                             oninput="autoResize(this)"
                         ></textarea>
-                        <button class="send-btn" id="sendBtn" onclick="sendMessage()">
-                            <i class="fas fa-paper-plane"></i>
-                        </button>
+                        <div class="input-actions">
+                            <button class="input-btn" onclick="attachFile()" title="إرفاق ملف">
+                                <i class="fas fa-paperclip"></i>
+                            </button>
+                            <button class="input-btn stop" id="stopBtn" onclick="stopGeneration()" style="display: none;">
+                                <i class="fas fa-stop"></i>
+                            </button>
+                            <button class="input-btn send" id="sendBtn" onclick="sendMessage()">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                        </div>
                     </div>
                     <div class="input-footer">
                         <div class="typing-indicator" id="typingIndicator"></div>
-                        <span>
-                            <i class="fas fa-keyboard"></i>
-                            Enter للإرسال | Shift+Enter سطر جديد
-                        </span>
+                        <span>Enter للإرسال • Shift+Enter سطر جديد</span>
                     </div>
                 </div>
             </div>
         </div>
     </div>
-
-    <!-- Templates -->
-    <template id="userMessageTemplate">
-        <div class="message user">
-            <div class="message-content">
-                <div class="message-header">
-                    <span class="sender-name">أنت</span>
-                    <span class="message-time"></span>
-                </div>
-                <div class="message-text"></div>
-            </div>
-            <div class="message-avatar">
-                <i class="fas fa-user"></i>
-            </div>
-        </div>
-    </template>
-
-    <template id="assistantMessageTemplate">
-        <div class="message assistant">
-            <div class="message-avatar">
-                <i class="fas fa-robot"></i>
-            </div>
-            <div class="message-content">
-                <div class="message-header">
-                    <span class="sender-name">Soft Atlas AI</span>
-                    <span class="message-time"></span>
-                </div>
-                <div class="message-text markdown-body"></div>
-                <div class="message-actions">
-                    <button onclick="copyMessage(this)">
-                        <i class="fas fa-copy"></i> نسخ
-                    </button>
-                    <button onclick="copyCode(this)">
-                        <i class="fas fa-code"></i> نسخ الكود
-                    </button>
-                    <button onclick="regenerateMessage(this)">
-                        <i class="fas fa-redo"></i> إعادة
-                    </button>
-                </div>
-            </div>
-        </div>
-    </template>
-
-    <template id="loadingTemplate">
-        <div class="message assistant">
-            <div class="message-avatar">
-                <i class="fas fa-robot"></i>
-            </div>
-            <div class="message-content">
-                <div class="loading-dots">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                </div>
-            </div>
-        </div>
-    </template>
-
+    
     <script>
         // المتغيرات العامة
-        let currentConversationId = null;
+        let currentConversationId = '{{ session.conversation_id }}';
         let isProcessing = false;
+        let currentStreamId = null;
+        let currentTheme = 'dark';
         let currentTab = 'chat';
-        let messageCache = new Map();
-
-        // تهيئة التطبيق
+        
+        // تهيئة
         document.addEventListener('DOMContentLoaded', function() {
             loadConversations();
             setupEventListeners();
-            initializeHighlighting();
         });
-
-        function initializeHighlighting() {
-            if (typeof hljs !== 'undefined') {
-                hljs.configure({
-                    languages: ['python', 'javascript', 'html', 'css', 'java', 'cpp', 'csharp', 'php', 'ruby', 'go', 'rust', 'sql']
-                });
-            }
-        }
-
+        
         function setupEventListeners() {
             const input = document.getElementById('messageInput');
             input.addEventListener('keydown', function(e) {
@@ -1269,90 +891,96 @@ def index():
                 }
             });
         }
-
+        
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+        }
+        
+        function toggleTheme() {
+            currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            document.body.setAttribute('data-theme', currentTheme);
+            const icon = document.querySelector('.theme-toggle i');
+            icon.className = currentTheme === 'dark' ? 'fas fa-moon' : 'fas fa-sun';
+        }
+        
         function switchTab(tab) {
             currentTab = tab;
-            document.querySelectorAll('.nav-item').forEach(item => {
-                item.classList.remove('active');
-            });
+            document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
             event.currentTarget.classList.add('active');
             
-            // تغيير الـ placeholder حسب التبويب
             const input = document.getElementById('messageInput');
-            switch(tab) {
-                case 'code':
-                    input.placeholder = 'اكتب سؤالك البرمجي... سأقدم شرحاً تفصيلياً مع أمثلة عملية';
-                    break;
-                case 'analyze':
-                    input.placeholder = 'اكتب النص لتحليله... سأحلله بدقة عالية';
-                    break;
-                case 'write':
-                    input.placeholder = 'اكتب موضوع الكتابة... سأكتب لك نصاً متقناً';
-                    break;
-                default:
-                    input.placeholder = 'اكتب سؤالك هنا... سأجيب بإجابة شاملة جداً';
+            if (tab === 'code') {
+                input.placeholder = 'اكتب سؤالك البرمجي... سأقدم كود كامل يصل لـ 5000 سطر';
+            } else {
+                input.placeholder = 'اكتب سؤالك هنا... سأجيب بإجابة شاملة جداً';
             }
         }
-
-        function toggleTheme() {
-            document.body.classList.toggle('light-theme');
-            const icon = document.querySelector('.theme-toggle i');
-            icon.classList.toggle('fa-moon');
-            icon.classList.toggle('fa-sun');
-        }
-
-        function openSettings() {
-            // يمكن إضافة نافذة إعدادات منبثقة
-            alert('قريباً: إعدادات متقدمة');
-        }
-
+        
         function loadConversations() {
             fetch('/api/conversations')
                 .then(res => res.json())
                 .then(conversations => {
                     const list = document.getElementById('conversationsList');
                     if (conversations.length === 0) {
-                        list.innerHTML = '<div style="color: var(--gray); text-align: center; padding: 20px;">لا توجد محادثات سابقة</div>';
+                        list.innerHTML = '<div style="text-align: center; padding: 1rem; opacity: 0.7;">لا توجد محادثات سابقة</div>';
                         return;
                     }
                     
                     list.innerHTML = '';
                     conversations.forEach(conv => {
-                        const item = document.createElement('div');
-                        item.className = `conversation-item ${conv.id === currentConversationId ? 'active' : ''}`;
-                        item.onclick = () => loadConversation(conv.id);
-                        
-                        const date = new Date(conv.timestamp);
-                        const timeStr = date.toLocaleString('ar-SA', { 
-                            hour: '2-digit', 
-                            minute: '2-digit',
-                            day: '2-digit',
-                            month: '2-digit'
-                        });
-                        
-                        const icon = conv.preview.includes('كود') || conv.preview.includes('برنامج') ? 'fa-code' : 'fa-message';
-                        
-                        item.innerHTML = `
-                            <div class="conv-preview">
-                                <i class="fas ${icon}" style="margin-left: 5px; color: var(--primary);"></i>
-                                ${escapeHtml(conv.preview)}
-                            </div>
-                            <div class="conv-meta">
-                                <span><i class="far fa-clock"></i> ${timeStr}</span>
-                                <span><i class="far fa-comment"></i> ${conv.message_count}</span>
-                            </div>
-                        `;
+                        const item = createConversationItem(conv);
                         list.appendChild(item);
                     });
                 });
         }
-
+        
+        function createConversationItem(conv) {
+            const div = document.createElement('div');
+            div.className = `conversation-item ${conv.id === currentConversationId ? 'active' : ''}`;
+            
+            const date = new Date(conv.timestamp);
+            const timeStr = date.toLocaleString('ar-SA', { 
+                hour: '2-digit', 
+                minute: '2-digit',
+                day: '2-digit',
+                month: '2-digit'
+            });
+            
+            div.innerHTML = `
+                <div class="conv-header">
+                    <span class="conv-title">${escapeHtml(conv.preview)}</span>
+                    <div class="conv-menu">
+                        <button class="conv-menu-btn"><i class="fas fa-ellipsis-v"></i></button>
+                        <div class="conv-menu-dropdown">
+                            <div class="menu-item" onclick="renameConversation('${conv.id}')">
+                                <i class="fas fa-edit"></i> تعديل الاسم
+                            </div>
+                            <div class="menu-item delete" onclick="deleteConversation('${conv.id}')">
+                                <i class="fas fa-trash"></i> حذف
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="conv-preview">${escapeHtml(conv.preview)}</div>
+                <div class="conv-date"><i class="far fa-clock"></i> ${timeStr}</div>
+            `;
+            
+            div.onclick = (e) => {
+                if (!e.target.closest('.conv-menu')) {
+                    loadConversation(conv.id);
+                }
+            };
+            
+            return div;
+        }
+        
         function loadConversation(conversationId) {
             currentConversationId = conversationId;
+            toggleSidebar();
+            
             fetch(`/api/conversation/${conversationId}`)
                 .then(res => res.json())
                 .then(data => {
-                    document.getElementById('welcomeMessage').style.display = 'none';
                     const container = document.getElementById('messagesContainer');
                     container.innerHTML = '';
                     
@@ -1364,139 +992,207 @@ def index():
                         }
                     });
                     
-                    // تحديث الحالة النشطة
+                    // تحديث النشط
                     document.querySelectorAll('.conversation-item').forEach(item => {
                         item.classList.remove('active');
                     });
                     const activeItem = Array.from(document.querySelectorAll('.conversation-item')).find(
-                        item => item.onclick.toString().includes(conversationId)
+                        item => item.innerHTML.includes(conversationId)
                     );
                     if (activeItem) activeItem.classList.add('active');
                 });
         }
-
+        
+        function newConversation() {
+            fetch('/api/conversations', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        currentConversationId = data.id;
+                        document.getElementById('messagesContainer').innerHTML = `
+                            <div style="text-align: center; padding: 3rem; opacity: 0.7;">
+                                <i class="fas fa-robot" style="font-size: 4rem; margin-bottom: 1rem;"></i>
+                                <h2>محادثة جديدة</h2>
+                                <p>كيف يمكنني مساعدتك اليوم؟</p>
+                            </div>
+                        `;
+                        loadConversations();
+                    }
+                });
+        }
+        
+        function deleteConversation(conversationId) {
+            if (confirm('هل أنت متأكد من حذف هذه المحادثة؟')) {
+                fetch(`/api/conversation/${conversationId}`, { method: 'DELETE' })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            if (conversationId === currentConversationId) {
+                                newConversation();
+                            }
+                            loadConversations();
+                        }
+                    });
+            }
+            event.stopPropagation();
+        }
+        
+        function renameConversation(conversationId) {
+            const newName = prompt('أدخل الاسم الجديد للمحادثة:');
+            if (newName) {
+                fetch(`/api/conversation/${conversationId}/rename`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: newName })
+                }).then(() => loadConversations());
+            }
+            event.stopPropagation();
+        }
+        
         function displayUserMessage(message, timestamp) {
-            const template = document.getElementById('userMessageTemplate');
-            const clone = template.content.cloneNode(true);
+            const container = document.getElementById('messagesContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message user';
             
             const time = timestamp ? new Date(timestamp) : new Date();
-            clone.querySelector('.message-time').textContent = time.toLocaleString('ar-SA', { 
-                hour: '2-digit', 
-                minute: '2-digit' 
-            });
-            clone.querySelector('.message-text').textContent = message;
+            const timeStr = time.toLocaleString('ar-SA', { hour: '2-digit', minute: '2-digit' });
             
-            document.getElementById('messagesContainer').appendChild(clone);
+            messageDiv.innerHTML = `
+                <div class="message-content">
+                    <div class="message-header">
+                        <span class="sender-name">أنت</span>
+                        <span>${timeStr}</span>
+                    </div>
+                    <div class="message-text">${escapeHtml(message)}</div>
+                </div>
+                <div class="message-avatar">
+                    <i class="fas fa-user"></i>
+                </div>
+            `;
+            
+            container.appendChild(messageDiv);
             scrollToBottom();
         }
-
+        
         function displayAssistantMessage(message, timestamp) {
-            const template = document.getElementById('assistantMessageTemplate');
-            const clone = template.content.cloneNode(true);
+            const container = document.getElementById('messagesContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant';
             
             const time = timestamp ? new Date(timestamp) : new Date();
-            clone.querySelector('.message-time').textContent = time.toLocaleString('ar-SA', { 
-                hour: '2-digit', 
-                minute: '2-digit' 
-            });
+            const timeStr = time.toLocaleString('ar-SA', { hour: '2-digit', minute: '2-digit' });
             
-            const messageText = clone.querySelector('.message-text');
+            // معالجة Markdown
+            let formattedMessage = message;
             if (typeof marked !== 'undefined') {
-                messageText.innerHTML = DOMPurify.sanitize(marked.parse(message));
-                // تطبيق التلوين على الأكواد
-                messageText.querySelectorAll('pre code').forEach((block) => {
-                    if (typeof hljs !== 'undefined') {
-                        hljs.highlightElement(block);
-                    }
-                    // إضافة زر نسخ الكود
-                    const pre = block.parentNode;
-                    const copyBtn = document.createElement('button');
-                    copyBtn.className = 'copy-code-btn';
-                    copyBtn.innerHTML = '<i class="fas fa-copy"></i> نسخ الكود';
-                    copyBtn.onclick = () => {
-                        navigator.clipboard.writeText(block.textContent);
-                        showNotification('تم نسخ الكود');
-                    };
-                    pre.appendChild(copyBtn);
-                });
-            } else {
-                messageText.textContent = message;
+                formattedMessage = DOMPurify.sanitize(marked.parse(message));
             }
             
-            document.getElementById('messagesContainer').appendChild(clone);
+            messageDiv.innerHTML = `
+                <div class="message-avatar">
+                    <i class="fas fa-robot"></i>
+                </div>
+                <div class="message-content">
+                    <div class="message-header">
+                        <span class="sender-name">Soft Atlas Pro</span>
+                        <span>${timeStr}</span>
+                    </div>
+                    <div class="message-text">${formattedMessage}</div>
+                    <div class="message-actions">
+                        <button class="action-btn" onclick="copyMessage(this)">
+                            <i class="fas fa-copy"></i> نسخ
+                        </button>
+                        <button class="action-btn" onclick="regenerateMessage(this)">
+                            <i class="fas fa-redo"></i> إعادة
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            container.appendChild(messageDiv);
+            
+            // تطبيق تلوين الكود
+            messageDiv.querySelectorAll('pre code').forEach(block => {
+                if (typeof hljs !== 'undefined') {
+                    hljs.highlightElement(block);
+                }
+                
+                // إضافة زر نسخ الكود
+                const pre = block.parentNode;
+                const copyBtn = document.createElement('button');
+                copyBtn.className = 'copy-btn';
+                copyBtn.innerHTML = '<i class="fas fa-copy"></i> نسخ الكود';
+                copyBtn.onclick = () => {
+                    navigator.clipboard.writeText(block.textContent);
+                    alert('تم نسخ الكود!');
+                };
+                pre.appendChild(copyBtn);
+            });
+            
             scrollToBottom();
         }
-
-        function showNotification(message) {
-            // يمكن إضافة نظام إشعارات متطور
-            alert(message);
-        }
-
+        
         function sendMessage() {
             if (isProcessing) return;
             
             const input = document.getElementById('messageInput');
             const message = input.value.trim();
             
-            if (!message) {
-                showNotification('الرجاء إدخال رسالة');
-                return;
-            }
+            if (!message) return;
             
-            isProcessing = true;
-            document.getElementById('sendBtn').disabled = true;
-            document.getElementById('typingIndicator').innerHTML = '<i class="fas fa-spinner fa-pulse"></i> جاري التفكير...';
+            // إزالة رسالة الترحيب
+            document.querySelector('.messages-container > div[style*="text-align: center"]')?.remove();
             
-            document.getElementById('welcomeMessage').style.display = 'none';
             displayUserMessage(message);
-            
             input.value = '';
             autoResize(input);
             
-            // إظهار مؤشر التحميل
-            const loadingTemplate = document.getElementById('loadingTemplate');
-            const loadingClone = loadingTemplate.content.cloneNode(true);
-            document.getElementById('messagesContainer').appendChild(loadingClone);
-            scrollToBottom();
+            // إظهار مؤشر الكتابة
+            showTypingIndicator();
             
-            // استخدام الـ streaming للسرعة
-            const eventSource = new EventSource(`/api/chat/stream?message=${encodeURIComponent(message)}`);
+            // إنشاء stream ID جديد
+            currentStreamId = Date.now().toString();
+            
+            // إظهار زر الإيقاف
+            document.getElementById('stopBtn').style.display = 'block';
+            
+            // بدء التدفق
+            const eventSource = new EventSource(`/api/chat/stream?message=${encodeURIComponent(message)}&stream_id=${currentStreamId}`);
             let fullResponse = '';
-            let messageDiv = null;
+            let assistantMessage = null;
             
             eventSource.onmessage = function(e) {
                 const data = JSON.parse(e.data);
                 
-                // إزالة مؤشر التحميل
-                document.querySelector('.loading-dots')?.closest('.message')?.remove();
+                // إخفاء مؤشر الكتابة
+                hideTypingIndicator();
                 
                 if (data.chunk) {
-                    // إنشاء أو تحديث رسالة المساعد
-                    if (!messageDiv) {
-                        const template = document.getElementById('assistantMessageTemplate');
-                        const clone = template.content.cloneNode(true);
-                        clone.querySelector('.message-time').textContent = new Date().toLocaleString('ar-SA', { 
-                            hour: '2-digit', 
-                            minute: '2-digit' 
-                        });
-                        document.getElementById('messagesContainer').appendChild(clone);
-                        messageDiv = document.querySelector('.message.assistant:last-child');
+                    if (!assistantMessage) {
+                        assistantMessage = document.createElement('div');
+                        assistantMessage.className = 'message assistant';
+                        assistantMessage.innerHTML = `
+                            <div class="message-avatar">
+                                <i class="fas fa-robot"></i>
+                            </div>
+                            <div class="message-content">
+                                <div class="message-header">
+                                    <span class="sender-name">Soft Atlas Pro</span>
+                                    <span>${new Date().toLocaleString('ar-SA', { hour: '2-digit', minute: '2-digit' })}</span>
+                                </div>
+                                <div class="message-text"></div>
+                            </div>
+                        `;
+                        document.getElementById('messagesContainer').appendChild(assistantMessage);
                     }
                     
                     fullResponse += data.chunk;
-                    const messageText = messageDiv.querySelector('.message-text');
+                    assistantMessage.querySelector('.message-text').innerHTML = marked.parse(fullResponse);
                     
-                    if (typeof marked !== 'undefined') {
-                        messageText.innerHTML = DOMPurify.sanitize(marked.parse(fullResponse));
-                        // تطبيق التلوين على الأكواد الجديدة
-                        messageText.querySelectorAll('pre code').forEach((block) => {
-                            if (typeof hljs !== 'undefined') {
-                                hljs.highlightElement(block);
-                            }
-                        });
-                    } else {
-                        messageText.textContent = fullResponse;
-                    }
+                    // تحديث تلوين الكود
+                    assistantMessage.querySelectorAll('pre code').forEach(block => {
+                        hljs.highlightElement(block);
+                    });
                     
                     scrollToBottom();
                 }
@@ -1505,8 +1201,8 @@ def index():
                     eventSource.close();
                     isProcessing = false;
                     document.getElementById('sendBtn').disabled = false;
-                    document.getElementById('typingIndicator').innerHTML = '';
-                    loadConversations(); // تحديث القائمة
+                    document.getElementById('stopBtn').style.display = 'none';
+                    loadConversations();
                 }
             };
             
@@ -1514,51 +1210,61 @@ def index():
                 eventSource.close();
                 isProcessing = false;
                 document.getElementById('sendBtn').disabled = false;
-                document.getElementById('typingIndicator').innerHTML = '';
-                document.querySelector('.loading-dots')?.closest('.message')?.remove();
-                showNotification('حدث خطأ في الاتصال');
+                document.getElementById('stopBtn').style.display = 'none';
+                hideTypingIndicator();
+                
+                // إظهار رسالة الخطأ
+                if (!assistantMessage) {
+                    displayAssistantMessage('⚠️ حدث خطأ في الاتصال. جاري إعادة المحاولة...');
+                }
             };
         }
-
-        function newConversation() {
-            fetch('/api/conversations', { method: 'POST' })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        currentConversationId = data.id;
-                        document.getElementById('messagesContainer').innerHTML = '';
-                        document.getElementById('welcomeMessage').style.display = 'block';
-                        loadConversations();
-                    }
+        
+        function stopGeneration() {
+            if (currentStreamId) {
+                fetch('/api/chat/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ stream_id: currentStreamId })
+                }).then(() => {
+                    document.getElementById('stopBtn').style.display = 'none';
+                    isProcessing = false;
+                    document.getElementById('sendBtn').disabled = false;
                 });
-        }
-
-        function copyMessage(button) {
-            const text = button.closest('.message-content').querySelector('.message-text').innerText;
-            navigator.clipboard.writeText(text).then(() => {
-                showNotification('تم نسخ الرسالة');
-            });
-        }
-
-        function copyCode(button) {
-            const messageDiv = button.closest('.message');
-            const codeBlocks = messageDiv.querySelectorAll('pre code');
-            if (codeBlocks.length > 0) {
-                let allCode = '';
-                codeBlocks.forEach(block => {
-                    allCode += block.textContent + '\\n\\n';
-                });
-                navigator.clipboard.writeText(allCode).then(() => {
-                    showNotification('تم نسخ كل الأكواد');
-                });
-            } else {
-                copyMessage(button);
             }
         }
-
+        
+        function showTypingIndicator() {
+            const indicator = document.getElementById('typingIndicator');
+            indicator.innerHTML = `
+                <div class="typing-dots">
+                    <span></span><span></span><span></span>
+                </div>
+                <span>Soft Atlas Pro يكتب...</span>
+            `;
+        }
+        
+        function hideTypingIndicator() {
+            document.getElementById('typingIndicator').innerHTML = '';
+        }
+        
+        function autoResize(textarea) {
+            textarea.style.height = 'auto';
+            textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+        }
+        
+        function scrollToBottom() {
+            const container = document.getElementById('messagesContainer');
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        function copyMessage(button) {
+            const text = button.closest('.message-content').querySelector('.message-text').innerText;
+            navigator.clipboard.writeText(text);
+            alert('تم النسخ!');
+        }
+        
         function regenerateMessage(button) {
-            if (isProcessing) return;
-            
             const messageDiv = button.closest('.message');
             const prevMessage = messageDiv.previousElementSibling;
             
@@ -1569,26 +1275,11 @@ def index():
                 sendMessage();
             }
         }
-
-        function setQuestion(question) {
-            document.getElementById('messageInput').value = question;
-            document.getElementById('messageInput').focus();
-            autoResize(document.getElementById('messageInput'));
+        
+        function attachFile() {
+            alert('قريباً: دعم رفع الملفات');
         }
-
-        function autoResize(textarea) {
-            textarea.style.height = 'auto';
-            textarea.style.height = Math.min(textarea.scrollHeight, 100) + 'px';
-        }
-
-        function scrollToBottom() {
-            const container = document.getElementById('messagesContainer');
-            container.scrollTo({
-                top: container.scrollHeight,
-                behavior: 'smooth'
-            });
-        }
-
+        
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
@@ -1601,120 +1292,95 @@ def index():
 
 @app.route('/api/chat/stream')
 def chat_stream():
-    """نقطة نهاية محسنة للمحادثة المتدفقة"""
+    """نقطة نهاية التدفق المحسنة للإجابات الطويلة"""
     message = request.args.get('message', '').strip()
     conversation_id = session.get('conversation_id')
+    stream_id = request.args.get('stream_id', str(uuid.uuid4()))
     
     if not message:
         return jsonify({'error': 'الرجاء إدخال رسالة'}), 400
     
+    # إنشاء flag للإيقاف
+    stop_flag = {'stopped': False}
+    active_streams[stream_id] = stop_flag
+    
     def generate():
-        # تخزين رسالة المستخدم
-        user_message = {
-            'role': 'user',
-            'content': message,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        if conversation_id not in conversations:
-            conversations[conversation_id] = []
-        
-        conversations[conversation_id].append(user_message)
-        
-        # تحضير الرسائل للنموذج
-        messages_for_api = [
-            {'role': msg['role'], 'content': msg['content']}
-            for msg in conversations[conversation_id]
-        ]
-        
-        full_response = ""
-        
-        # توليد الرد المتدفق بسرعة
-        for chunk in generate_stream_response(messages_for_api):
-            full_response += chunk
-            yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-        
-        # تخزين الرد الكامل
-        assistant_message = {
-            'role': 'assistant',
-            'content': full_response,
-            'timestamp': datetime.now().isoformat()
-        }
-        conversations[conversation_id].append(assistant_message)
-        
-        yield f"data: {json.dumps({'done': True})}\n\n"
+        try:
+            # تخزين رسالة المستخدم
+            user_message = {
+                'role': 'user',
+                'content': message,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            with conversations_lock:
+                if conversation_id not in conversations:
+                    conversations[conversation_id] = []
+                conversations[conversation_id].append(user_message)
+            
+            # تحضير الرسائل
+            messages_for_api = [
+                {'role': msg['role'], 'content': msg['content']}
+                for msg in conversations[conversation_id]
+            ]
+            
+            full_response = ""
+            
+            # توليد الرد الطويل
+            for chunk in generate_long_response(messages_for_api, stream_id, stop_flag):
+                if stop_flag.get('stopped', False):
+                    break
+                full_response += chunk
+                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+            
+            # تخزين الرد الكامل
+            if full_response and not stop_flag.get('stopped', False):
+                assistant_message = {
+                    'role': 'assistant',
+                    'content': full_response,
+                    'timestamp': datetime.now().isoformat()
+                }
+                with conversations_lock:
+                    conversations[conversation_id].append(assistant_message)
+            
+            yield f"data: {json.dumps({'done': True})}\n\n"
+            
+        finally:
+            # تنظيف
+            active_streams.pop(stream_id, None)
     
     response = Response(generate(), mimetype='text/event-stream')
     response.headers['Cache-Control'] = 'no-cache'
     response.headers['X-Accel-Buffering'] = 'no'
     return response
 
-@app.route('/api/chat', methods=['POST'])
-def chat():
-    """نقطة نهاية API للمحادثة"""
-    try:
-        data = request.json
-        message = data.get('message', '').strip()
-        conversation_id = session.get('conversation_id')
-        
-        if not message:
-            return jsonify({'error': 'الرجاء إدخال رسالة'}), 400
-        
-        # تخزين رسالة المستخدم
-        user_message = {
-            'role': 'user',
-            'content': message,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        if conversation_id not in conversations:
-            conversations[conversation_id] = []
-        
-        conversations[conversation_id].append(user_message)
-        
-        # تحضير الرسائل للنموذج
-        messages_for_api = [
-            {'role': msg['role'], 'content': msg['content']}
-            for msg in conversations[conversation_id]
-        ]
-        
-        # توليد الرد
-        full_response = ""
-        for chunk in generate_stream_response(messages_for_api):
-            full_response += chunk
-        
-        # تخزين رد المساعد
-        assistant_message = {
-            'role': 'assistant',
-            'content': full_response,
-            'timestamp': datetime.now().isoformat()
-        }
-        conversations[conversation_id].append(assistant_message)
-        
-        return jsonify({
-            'success': True,
-            'response': full_response,
-            'timestamp': assistant_message['timestamp']
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+@app.route('/api/chat/stop', methods=['POST'])
+def stop_chat():
+    """إيقاف توليد الإجابة"""
+    data = request.json
+    stream_id = data.get('stream_id')
+    
+    if stream_id in active_streams:
+        active_streams[stream_id]['stopped'] = True
+        return jsonify({'success': True})
+    
+    return jsonify({'success': False}), 404
 
 @app.route('/api/conversations', methods=['GET'])
 def list_conversations():
-    """قائمة بكل المحادثات"""
+    """قائمة المحادثات"""
     conv_list = []
-    for conv_id, messages in conversations.items():
-        if messages:
-            first_msg = messages[0]['content']
-            conv_list.append({
-                'id': conv_id,
-                'preview': first_msg[:40] + '...' if len(first_msg) > 40 else first_msg,
-                'timestamp': messages[0]['timestamp'],
-                'message_count': len(messages) // 2
-            })
+    with conversations_lock:
+        for conv_id, messages in conversations.items():
+            if messages:
+                first_msg = messages[0]['content']
+                conv_list.append({
+                    'id': conv_id,
+                    'preview': first_msg[:50] + '...' if len(first_msg) > 50 else first_msg,
+                    'timestamp': messages[0]['timestamp'],
+                    'message_count': len(messages) // 2
+                })
     
-    # ترتيب من الأحدث
     sorted_list = sorted(conv_list, key=lambda x: x['timestamp'], reverse=True)
     return jsonify(sorted_list)
 
@@ -1722,36 +1388,57 @@ def list_conversations():
 def create_conversation():
     """إنشاء محادثة جديدة"""
     new_id = str(uuid.uuid4())
-    conversations[new_id] = []
+    with conversations_lock:
+        conversations[new_id] = []
     session['conversation_id'] = new_id
     return jsonify({'success': True, 'id': new_id})
 
 @app.route('/api/conversation/<conversation_id>', methods=['GET'])
 def get_conversation(conversation_id):
     """استرجاع محادثة محددة"""
-    if conversation_id in conversations:
-        return jsonify({'messages': conversations[conversation_id]})
+    with conversations_lock:
+        if conversation_id in conversations:
+            return jsonify({'messages': conversations[conversation_id]})
     return jsonify({'messages': []})
 
-@app.route('/api/clear', methods=['POST'])
-def clear_conversation():
-    """مسح المحادثة الحالية"""
-    conversation_id = session.get('conversation_id')
-    if conversation_id in conversations:
-        conversations[conversation_id] = []
+@app.route('/api/conversation/<conversation_id>', methods=['DELETE'])
+def delete_conversation(conversation_id):
+    """حذف محادثة"""
+    with conversations_lock:
+        if conversation_id in conversations:
+            del conversations[conversation_id]
+            return jsonify({'success': True})
+    return jsonify({'success': False}), 404
+
+@app.route('/api/conversation/<conversation_id>/rename', methods=['POST'])
+def rename_conversation(conversation_id):
+    """تغيير اسم المحادثة"""
+    data = request.json
+    new_name = data.get('name')
+    
+    with conversations_lock:
+        if conversation_id in conversations and conversations[conversation_id]:
+            # تعديل أول رسالة لتكون الاسم الجديد
+            if conversations[conversation_id][0]['role'] == 'user':
+                conversations[conversation_id][0]['content'] = new_name
+    
     return jsonify({'success': True})
 
 if __name__ == '__main__':
     print("="*80)
-    print("🚀 Soft Atlas AI - المساعد الذكي الفائق")
+    print("🚀 Soft Atlas AI Pro - النسخة الفائقة")
     print("="*80)
-    print(f"📡 الخادم: http://localhost:5000")
-    print(f"🤖 النموذج: Qwen 3.5 122B (122 مليار معامل)")
-    print(f"⚡ الميزات: سرعة فائقة | إجابات طويلة جداً | معالجة متقدمة للأكواد")
-    print(f"🎨 التصميم: حديث | متجاوب | أنيميشن متقدم")
-    print(f"🔑 مفتاح API: ✓ نشط")
+    print("📡 الخادم: http://localhost:5000")
+    print("🤖 الميزات الجديدة:")
+    print("   • إجابات طويلة جداً (حتى 5000 سطر كود)")
+    print("   • زر إيقاف التوليد")
+    print("   • شريط جانبي مخفي للمحادثات")
+    print("   • وضع داكن/نهاري")
+    print("   • حذف وتعديل المحادثات")
+    print("   • دعدة لغات برمجة")
+    print("   • تصميم صغير وجميل")
     print("="*80)
-    print("✅ افتح المتصفح على: http://localhost:5000")
+    print("✅ تم حل مشكلة التوقف!")
     print("="*80)
     
     app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
