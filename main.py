@@ -21,7 +21,7 @@ MODEL_NAME = "qwen/qwen3.5-122b-a10b"
 active_sessions = {}
 
 def generate_professional_response(messages, session_id):
-    """توليد ردود احترافية"""
+    """ توليد ردود احترافية جدا"""
     headers = {
         "Authorization": f"Bearer {NVIDIA_API_KEY}",
         "Accept": "text/event-stream",
