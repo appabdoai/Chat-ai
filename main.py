@@ -32,7 +32,7 @@ def generate_professional_response(messages, stream_id):
     
     system_prompt = {
         "role": "system",
-        "content": """أنت Soft Atlas AI Professional - خبير محترف في جميع المجالات.
+        "content": """أنت Abdo AI Pro - خبير محترف في جميع المجالات.
 
 القواعد الذهبية للإجابات الاحترافية:
 
@@ -1098,7 +1098,7 @@ def index():
                     <div class="logo-icon">
                         <i class="fas fa-brain"></i>
                     </div>
-                    <span class="logo-text">Abdo Ai Pro</span>
+                    <span class="logo-text">Abdo AI Pro</span>
                     <span class="logo-badge">خبير</span>
                 </div>
             </div>
@@ -1169,7 +1169,7 @@ def index():
                         <div class="welcome-icon">
                             <i class="fas fa-robot"></i>
                         </div>
-                        <h1>Soft Atlas Pro</h1>
+                        <h1>Abdo AI Pro</h1>
                         <p>خبيرك المحترف للتحليل والبرمجة والإحصائيات</p>
                         
                         <div class="features-grid">
@@ -1511,7 +1511,7 @@ def index():
                 </div>
                 <div class="message-content">
                     <div class="message-header">
-                        <span class="sender-name">Soft Atlas Pro</span>
+                        <span class="sender-name">Abdo AI Pro</span>
                         <span>${timeStr}</span>
                     </div>
                     <div class="message-text">${formattedMessage}</div>
@@ -1620,7 +1620,7 @@ def index():
                             </div>
                             <div class="message-content">
                                 <div class="message-header">
-                                    <span class="sender-name">Soft Atlas Pro</span>
+                                    <span class="sender-name">Abdo AI Pro</span>
                                     <span>${new Date().toLocaleString('ar-SA', { hour: '2-digit', minute: '2-digit' })}</span>
                                 </div>
                                 <div class="message-text"></div>
@@ -1854,7 +1854,7 @@ def clear_conversation():
 
 if __name__ == '__main__':
     print("="*80)
-    print("🚀 Soft Atlas AI Pro - النسخة النهائية المحترفة")
+    print("🚀 Abdo AI Pro - النسخة النهائية المحترفة")
     print("="*80)
     print("✅ تم حل جميع المشاكل:")
     print("   • محادثة جديدة تعمل فوراً")
