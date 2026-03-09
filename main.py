@@ -20,10 +20,10 @@ MODEL_NAME = "qwen/qwen3.5-122b-a10b"
 
 # تخزين المحادثات والتدفقات النشطة
 conversations = {}
-active_streams = {}  # لتتبع التدفقات النشطة وإيقافها
+active_streams = {}
 
-def generate_expert_response(messages, stream_id):
-    """توليد ردود خبيرة مع إمكانية الإيقاف"""
+def generate_professional_response(messages, stream_id):
+    """توليد ردود احترافية كاملة بدون تقطع"""
     headers = {
         "Authorization": f"Bearer {NVIDIA_API_KEY}",
         "Accept": "text/event-stream",
@@ -32,57 +32,50 @@ def generate_expert_response(messages, stream_id):
     
     system_prompt = {
         "role": "system",
-        "content": """أنت Soft Atlas AI Expert - خبير متخصص في التحليل والنقاش العميق.
+        "content": """أنت Soft Atlas AI Professional - خبير محترف في جميع المجالات.
 
-قواعد الخبرة المتقدمة:
+القواعد الذهبية للإجابات الاحترافية:
 
-1. للأسئلة العامة والتحليل:
-   - ابدأ الإجابة فوراً دون مقدمات
-   - حلل السؤال من 7 جوانب مختلفة على الأقل
-   - قدم أدلة وإحصائيات وأرقام دقيقة
-   - ناقش بالإيجابيات والسلبيات
-   - أضف توقعات وتوصيات مستقبلية
+1. **البداية المباشرة**: ابدأ الإجابة فوراً بدون مقدمات أو ترحيب
 
-2. للمواضيع البرمجية:
-   - قدم كود كامل ومتكامل (2000-5000 سطر)
-   - اشرح كل دالة وكلاس بالتفصيل الممل
-   - أضف تعليقات على كل سطر بالعربية
-   - قدم 10 أمثلة تطبيقية متنوعة
-   - حلل أداء الكود واقترح تحسينات
-   - ناقش الأخطاء الشائعة وكيفية تجنبها
+2. **الهيكل التنظيمي**:
+   - استخدم عناوين رئيسية (##) للأقسام الرئيسية
+   - استخدم عناوين فرعية (###) للتفاصيل
+   - استخدم القوائم النقطية والرقمية
 
-3. للمقارنات:
-   - استخدم جداول مقارنة مفصلة
-   - قارن من جميع النواحي (أداء، تكلفة، سهولة، أمان)
-   - أضف توصيات بناءً على حالة الاستخدام
+3. **للعروض والتحليلات**:
+   - استخدم جداول منسقة للبيانات
+   - أضف إحصائيات دقيقة
+   - قارن بين الخيارات
 
-4. للإحصائيات:
-   - استخدم جداول إحصائية مرتبة
-   - أضف رسوم بيانية نصية
-   - حلل الاتجاهات والأنماط
+4. **للبرمجة**:
+   - قدم كود كامل ومتكامل
+   - أضف تعليقات بالعربية
+   - اشرح كل جزء بالتفصيل
 
-5. تنسيق الإجابة:
-   - استخدم عناوين رئيسية (##)
-   - استخدم عناوين فرعية (###)
-   - استخدم جداول للبيانات
-   - استخدم قوائم نقطية ورقمية
-   - استخدم أكواد مع تلوين
-   - تأكد من اكتمال الإجابة 100%
+5. **للمقارنات**:
+   - استخدم جدول مقارنة من 3 أعمدة
+   - قارن من جميع النواحي
+   - قدم توصيات نهائية
 
-6. مهم جداً:
-   - لا تتوقف قبل إكمال الفكرة كاملة
-   - قسّم الإجابات الطويلة لأقسام واضحة
-   - استخدم لغة عربية فصحى سليمة
-   - كن دقيقاً وشاملاً في كل نقطة"""
+6. **ضمان الاكتمال**:
+   - أكمل جميع الأفكار حتى النهاية
+   - لا تتوقف قبل إكمال الموضوع
+   - قسّم الإجابات الطويلة لأقسام
+
+7. **الدقة**:
+   - استخدم أرقام وإحصائيات حقيقية
+   - قدم أمثلة واقعية
+   - استشهد بالمصادر الموثوقة"""
     }
     
-    full_messages = [system_prompt] + messages[-30:]  # سياق أكبر
+    full_messages = [system_prompt] + messages[-20:]
     
     payload = {
         "model": MODEL_NAME,
         "messages": full_messages,
         "max_tokens": 32768,
-        "temperature": 0.7,
+        "temperature": 0.65,
         "top_p": 0.95,
         "stream": True,
         "frequency_penalty": 0.1,
@@ -100,9 +93,8 @@ def generate_expert_response(messages, stream_id):
         
         if response.status_code == 200:
             for line in response.iter_lines():
-                # التحقق من طلب الإيقاف
                 if stream_id in active_streams and active_streams[stream_id].get('stopped', False):
-                    yield "\n\n**[تم إيقاف التوليد بناءً على طلبك]**"
+                    yield "\n\n**[تم إيقاف التوليد]**"
                     break
                     
                 if line:
@@ -119,14 +111,14 @@ def generate_expert_response(messages, stream_id):
                             except:
                                 continue
         else:
-            yield f"⚠️ عذراً، حدث خطأ تقني: {response.status_code}"
+            yield f"⚠️ خطأ: {response.status_code}"
             
     except Exception as e:
-        yield f"❌ خطأ في الاتصال: {str(e)}، جاري إعادة المحاولة..."
+        yield f"❌ خطأ: {str(e)}"
 
 @app.route('/')
 def index():
-    """الصفحة الرئيسية - النسخة النهائية"""
+    """الصفحة الرئيسية - التصميم المحترف النهائي"""
     if 'conversation_id' not in session:
         session['conversation_id'] = str(uuid.uuid4())
         conversations[session['conversation_id']] = []
@@ -136,8 +128,8 @@ def index():
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Soft Atlas AI Expert - خبير التحليل والبرمجة</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Soft Atlas AI Pro - الخبير المحترف</title>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
@@ -158,22 +150,40 @@ def index():
             --accent: #f59e0b;
             --success: #10b981;
             --danger: #ef4444;
-            --bg-primary: #0f172a;
-            --bg-secondary: #1e293b;
-            --text-primary: #f8fafc;
-            --text-secondary: #94a3b8;
-            --border: #334155;
-            --card-bg: #1e293b;
-            --hover-bg: #2d3748;
-            --code-bg: #0f172a;
+            --bg-dark: #0a0c14;
+            --bg-card: #111827;
+            --bg-input: #1a1f2e;
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --border: #1f2937;
+            --border-light: #374151;
+            --hover: #2d3748;
+            --code-bg: #0a0c14;
+            --gradient-1: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            --gradient-2: linear-gradient(135deg, #f59e0b, #ef4444);
+            --shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        [data-theme="light"] {
+            --bg-dark: #f9fafb;
+            --bg-card: #ffffff;
+            --bg-input: #f3f4f6;
+            --text-primary: #111827;
+            --text-secondary: #4b5563;
+            --border: #e5e7eb;
+            --border-light: #d1d5db;
+            --hover: #e5e7eb;
+            --code-bg: #f3f4f6;
+            --shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
         }
 
         body {
             font-family: 'Cairo', sans-serif;
-            background: var(--bg-primary);
+            background: var(--bg-dark);
             color: var(--text-primary);
             height: 100vh;
             overflow: hidden;
+            transition: background 0.3s, color 0.3s;
         }
 
         .app {
@@ -182,42 +192,46 @@ def index():
             flex-direction: column;
         }
 
-        /* Navbar */
+        /* Navbar احترافي */
         .navbar {
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border);
+            background: var(--bg-card);
+            border-bottom: 2px solid var(--border);
             padding: 0 2rem;
-            height: 70px;
+            height: 75px;
             display: flex;
             align-items: center;
             justify-content: space-between;
             position: relative;
             z-index: 100;
+            box-shadow: var(--shadow);
         }
 
         .nav-left {
             display: flex;
             align-items: center;
-            gap: 1rem;
+            gap: 1.5rem;
         }
 
         .menu-btn {
             width: 45px;
             height: 45px;
             background: transparent;
-            border: 1px solid var(--border);
-            border-radius: 12px;
+            border: 2px solid var(--border);
+            border-radius: 14px;
             color: var(--text-primary);
             cursor: pointer;
             transition: all 0.3s;
             display: flex;
             align-items: center;
             justify-content: center;
+            font-size: 1.2rem;
         }
 
         .menu-btn:hover {
             background: var(--primary);
             border-color: var(--primary);
+            color: white;
+            transform: scale(1.05);
         }
 
         .logo {
@@ -227,42 +241,74 @@ def index():
         }
 
         .logo-icon {
-            width: 45px;
-            height: 45px;
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
-            border-radius: 12px;
+            width: 50px;
+            height: 50px;
+            background: var(--gradient-1);
+            border-radius: 16px;
             display: flex;
             align-items: center;
             justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .logo-icon::after {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.3), transparent);
+            transform: rotate(45deg);
+            animation: shine 3s infinite;
+        }
+
+        @keyframes shine {
+            0% { transform: translateX(-100%) rotate(45deg); }
+            20%, 100% { transform: translateX(100%) rotate(45deg); }
         }
 
         .logo-icon i {
-            font-size: 22px;
+            font-size: 24px;
             color: white;
+            position: relative;
+            z-index: 2;
         }
 
         .logo-text {
             font-weight: 800;
-            font-size: 1.4rem;
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            font-size: 1.5rem;
+            background: var(--gradient-1);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+        }
+
+        .logo-badge {
+            background: var(--accent);
+            color: white;
+            font-size: 0.7rem;
+            padding: 0.3rem 0.8rem;
+            border-radius: 30px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
         }
 
         .nav-tabs {
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            background: var(--bg-primary);
-            padding: 0.3rem;
+            background: var(--bg-input);
+            padding: 0.4rem;
             border-radius: 40px;
-            border: 1px solid var(--border);
+            border: 2px solid var(--border);
         }
 
         .nav-tab {
-            padding: 0.5rem 1.5rem;
+            padding: 0.6rem 1.8rem;
             border-radius: 30px;
             font-size: 0.95rem;
+            font-weight: 600;
             cursor: pointer;
             transition: all 0.3s;
             color: var(--text-secondary);
@@ -273,33 +319,33 @@ def index():
 
         .nav-tab:hover {
             color: var(--text-primary);
-            background: var(--hover-bg);
+            background: var(--hover);
         }
 
         .nav-tab.active {
-            background: var(--primary);
+            background: var(--gradient-1);
             color: white;
         }
 
         .nav-right {
             display: flex;
             align-items: center;
-            gap: 1rem;
+            gap: 1.2rem;
         }
 
         .status {
             display: flex;
             align-items: center;
-            gap: 8px;
-            padding: 0.4rem 1.2rem;
-            background: var(--bg-primary);
-            border-radius: 30px;
-            border: 1px solid var(--border);
+            gap: 10px;
+            padding: 0.5rem 1.5rem;
+            background: var(--bg-input);
+            border-radius: 40px;
+            border: 2px solid var(--border);
         }
 
         .status-dot {
-            width: 10px;
-            height: 10px;
+            width: 12px;
+            height: 12px;
             background: var(--success);
             border-radius: 50%;
             animation: pulse 2s infinite;
@@ -307,26 +353,28 @@ def index():
 
         @keyframes pulse {
             0%, 100% { transform: scale(1); opacity: 1; }
-            50% { transform: scale(1.2); opacity: 0.7; }
+            50% { transform: scale(1.3); opacity: 0.7; }
         }
 
         .theme-toggle {
             width: 45px;
             height: 45px;
             background: transparent;
-            border: 1px solid var(--border);
-            border-radius: 12px;
+            border: 2px solid var(--border);
+            border-radius: 14px;
             color: var(--text-primary);
             cursor: pointer;
             transition: all 0.3s;
             display: flex;
             align-items: center;
             justify-content: center;
+            font-size: 1.2rem;
         }
 
         .theme-toggle:hover {
             background: var(--primary);
             border-color: var(--primary);
+            color: white;
         }
 
         /* Main Layout */
@@ -337,11 +385,11 @@ def index():
             position: relative;
         }
 
-        /* Sidebar */
+        /* Sidebar محادثات */
         .sidebar {
-            width: 340px;
-            background: var(--bg-secondary);
-            border-left: 1px solid var(--border);
+            width: 360px;
+            background: var(--bg-card);
+            border-left: 2px solid var(--border);
             display: flex;
             flex-direction: column;
             transition: transform 0.3s ease;
@@ -351,6 +399,7 @@ def index():
             bottom: 0;
             z-index: 90;
             transform: translateX(100%);
+            box-shadow: var(--shadow);
         }
 
         .sidebar.open {
@@ -359,89 +408,96 @@ def index():
 
         .sidebar-header {
             padding: 1.5rem;
-            border-bottom: 1px solid var(--border);
+            border-bottom: 2px solid var(--border);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
         .sidebar-header h3 {
-            font-size: 1.1rem;
-            font-weight: 600;
+            font-size: 1.2rem;
+            font-weight: 700;
             display: flex;
             align-items: center;
             gap: 10px;
         }
 
         .close-sidebar {
-            width: 35px;
-            height: 35px;
+            width: 40px;
+            height: 40px;
             background: transparent;
-            border: 1px solid var(--border);
-            border-radius: 10px;
+            border: 2px solid var(--border);
+            border-radius: 12px;
             color: var(--text-primary);
             cursor: pointer;
             transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .close-sidebar:hover {
-            background: var(--primary);
+            background: var(--danger);
+            border-color: var(--danger);
+            color: white;
         }
 
         .new-chat-btn {
-            margin: 1rem;
-            padding: 1rem;
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            margin: 1.5rem;
+            padding: 1.2rem;
+            background: var(--gradient-1);
             border: none;
-            border-radius: 12px;
+            border-radius: 16px;
             color: white;
-            font-weight: 600;
+            font-weight: 700;
+            font-size: 1.1rem;
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 10px;
+            gap: 12px;
             transition: all 0.3s;
-            font-size: 1rem;
         }
 
         .new-chat-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(59, 130, 246, 0.3);
+            transform: translateY(-3px);
+            box-shadow: 0 15px 30px rgba(59, 130, 246, 0.4);
         }
 
         .conversations-list {
             flex: 1;
             overflow-y: auto;
-            padding: 1rem;
+            padding: 1.5rem;
         }
 
         .conversation-item {
-            padding: 1rem;
-            background: var(--bg-primary);
-            border-radius: 12px;
-            margin-bottom: 0.75rem;
+            padding: 1.2rem;
+            background: var(--bg-input);
+            border-radius: 16px;
+            margin-bottom: 1rem;
             cursor: pointer;
             transition: all 0.3s;
-            border: 1px solid transparent;
+            border: 2px solid transparent;
         }
 
         .conversation-item:hover {
             border-color: var(--primary);
             transform: translateX(-5px);
-            background: var(--hover-bg);
+            background: var(--hover);
         }
 
         .conversation-item.active {
             border-color: var(--primary);
-            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(139, 92, 246, 0.1));
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(139, 92, 246, 0.2));
         }
 
         .conv-title {
-            font-weight: 600;
-            margin-bottom: 0.5rem;
+            font-weight: 700;
+            margin-bottom: 0.7rem;
             display: flex;
             justify-content: space-between;
+            align-items: center;
+            font-size: 1rem;
         }
 
         .conv-delete {
@@ -449,17 +505,20 @@ def index():
             border: none;
             color: var(--text-secondary);
             cursor: pointer;
-            padding: 0.2rem;
+            padding: 0.3rem;
+            transition: all 0.3s;
+            font-size: 1rem;
         }
 
         .conv-delete:hover {
             color: var(--danger);
+            transform: scale(1.2);
         }
 
         .conv-preview {
-            font-size: 0.85rem;
+            font-size: 0.9rem;
             color: var(--text-secondary);
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.7rem;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -468,7 +527,7 @@ def index():
         .conv-meta {
             display: flex;
             justify-content: space-between;
-            font-size: 0.7rem;
+            font-size: 0.8rem;
             color: var(--text-secondary);
         }
 
@@ -478,51 +537,54 @@ def index():
             display: flex;
             flex-direction: column;
             overflow: hidden;
-            background: var(--bg-primary);
+            background: var(--bg-dark);
         }
 
         .chat-header {
-            padding: 1rem 2rem;
-            border-bottom: 1px solid var(--border);
+            padding: 1.2rem 2rem;
+            border-bottom: 2px solid var(--border);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            background: var(--bg-secondary);
+            background: var(--bg-card);
         }
 
         .chat-title {
             display: flex;
             align-items: center;
-            gap: 1rem;
+            gap: 1.5rem;
         }
 
         .expert-badge {
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
-            padding: 0.3rem 1.2rem;
-            border-radius: 30px;
-            font-size: 0.85rem;
-            font-weight: 600;
+            background: var(--gradient-1);
+            padding: 0.5rem 1.5rem;
+            border-radius: 40px;
+            font-size: 0.9rem;
+            font-weight: 700;
             display: flex;
             align-items: center;
             gap: 8px;
+            color: white;
         }
 
         .clear-chat {
             background: transparent;
-            border: 1px solid var(--border);
+            border: 2px solid var(--border);
             color: var(--text-primary);
-            padding: 0.5rem 1.2rem;
-            border-radius: 8px;
+            padding: 0.6rem 1.5rem;
+            border-radius: 12px;
             cursor: pointer;
             transition: all 0.3s;
             display: flex;
             align-items: center;
             gap: 8px;
+            font-weight: 600;
         }
 
         .clear-chat:hover {
             background: var(--danger);
             border-color: var(--danger);
+            color: white;
         }
 
         /* Messages Container */
@@ -535,13 +597,13 @@ def index():
 
         .message {
             display: flex;
-            gap: 1rem;
+            gap: 1.2rem;
             margin-bottom: 2rem;
-            animation: fadeIn 0.3s ease;
+            animation: slideIn 0.3s ease;
         }
 
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(20px); }
             to { opacity: 1; transform: translateY(0); }
         }
 
@@ -550,33 +612,34 @@ def index():
         }
 
         .message-avatar {
-            width: 50px;
-            height: 50px;
-            border-radius: 16px;
+            width: 55px;
+            height: 55px;
+            border-radius: 18px;
             display: flex;
             align-items: center;
             justify-content: center;
             flex-shrink: 0;
+            font-size: 1.5rem;
         }
 
         .message.user .message-avatar {
-            background: linear-gradient(135deg, var(--accent), #f97316);
+            background: var(--gradient-2);
         }
 
         .message.assistant .message-avatar {
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            background: var(--gradient-1);
         }
 
         .message-content {
             flex: 1;
-            max-width: calc(100% - 70px);
+            max-width: calc(100% - 75px);
         }
 
         .message-header {
             display: flex;
             justify-content: space-between;
-            margin-bottom: 0.5rem;
-            font-size: 0.9rem;
+            margin-bottom: 0.7rem;
+            font-size: 0.95rem;
             color: var(--text-secondary);
         }
 
@@ -584,28 +647,141 @@ def index():
             flex-direction: row-reverse;
         }
 
+        .sender-name {
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
         .message-text {
-            background: var(--bg-secondary);
-            padding: 1.25rem 1.5rem;
-            border-radius: 16px;
-            border: 1px solid var(--border);
+            background: var(--bg-card);
+            padding: 1.5rem;
+            border-radius: 20px;
+            border: 2px solid var(--border);
             color: var(--text-primary);
             line-height: 1.8;
             word-wrap: break-word;
             overflow-wrap: break-word;
+            font-size: 1rem;
         }
 
         .message.user .message-text {
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            background: var(--gradient-1);
             border: none;
+            color: white;
+        }
+
+        /* تنسيق الجداول */
+        .message-text table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+            background: var(--bg-input);
+            border-radius: 16px;
+            overflow: hidden;
+            border: 2px solid var(--border);
+        }
+
+        .message-text th {
+            background: var(--primary);
+            color: white;
+            padding: 1rem;
+            font-weight: 700;
+            font-size: 1rem;
+        }
+
+        .message-text td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .message-text tr:last-child td {
+            border-bottom: none;
+        }
+
+        .message-text tr:hover td {
+            background: var(--hover);
+        }
+
+        /* تنسيق الإحصائيات */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.2rem;
+            margin: 1.5rem 0;
+        }
+
+        .stat-card {
+            background: var(--bg-input);
+            padding: 1.5rem;
+            border-radius: 16px;
+            border: 2px solid var(--border);
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-label {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        /* تنسيق الأكواد */
+        .message-text pre {
+            background: var(--code-bg) !important;
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            border: 2px solid var(--border);
+            position: relative;
+            max-width: 100%;
+            overflow-x: auto;
+        }
+
+        .message-text code {
+            font-family: 'Fira Code', monospace;
+            font-size: 0.95rem;
+        }
+
+        .copy-code {
+            position: absolute;
+            top: 0.8rem;
+            left: 0.8rem;
+            background: var(--bg-card);
+            border: 2px solid var(--border);
+            color: var(--text-primary);
+            padding: 0.4rem 1rem;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-weight: 500;
+        }
+
+        pre:hover .copy-code {
+            opacity: 1;
+        }
+
+        .copy-code:hover {
+            background: var(--primary);
+            border-color: var(--primary);
             color: white;
         }
 
         /* Message Actions */
         .message-actions {
             display: flex;
-            gap: 0.5rem;
-            margin-top: 0.5rem;
+            gap: 0.8rem;
+            margin-top: 0.8rem;
             justify-content: flex-start;
         }
 
@@ -614,22 +790,24 @@ def index():
         }
 
         .action-btn {
-            background: var(--bg-primary);
-            border: 1px solid var(--border);
+            background: var(--bg-input);
+            border: 2px solid var(--border);
             color: var(--text-primary);
-            padding: 0.4rem 1rem;
-            border-radius: 8px;
-            font-size: 0.85rem;
+            padding: 0.5rem 1.2rem;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            font-weight: 500;
             cursor: pointer;
             transition: all 0.3s;
             display: flex;
             align-items: center;
-            gap: 5px;
+            gap: 6px;
         }
 
         .action-btn:hover {
             background: var(--primary);
             border-color: var(--primary);
+            color: white;
         }
 
         .action-btn.stop {
@@ -642,85 +820,20 @@ def index():
             background: #dc2626;
         }
 
-        /* Code Blocks */
-        .message-text pre {
-            background: var(--code-bg) !important;
-            border-radius: 12px;
-            padding: 1rem;
-            margin: 1rem 0;
-            border: 1px solid var(--border);
-            position: relative;
-            max-width: 100%;
-            overflow-x: auto;
-        }
-
-        .message-text code {
-            font-family: 'Fira Code', monospace;
-            font-size: 0.9rem;
-        }
-
-        .copy-code {
-            position: absolute;
-            top: 0.5rem;
-            left: 0.5rem;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            color: var(--text-primary);
-            padding: 0.25rem 0.75rem;
-            border-radius: 6px;
-            font-size: 0.8rem;
-            cursor: pointer;
-            opacity: 0;
-            transition: opacity 0.3s;
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-
-        pre:hover .copy-code {
-            opacity: 1;
-        }
-
-        /* Tables */
-        .message-text table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 1rem 0;
-            background: var(--bg-primary);
-            border-radius: 12px;
-            overflow: hidden;
-        }
-
-        .message-text th {
-            background: var(--primary);
-            color: white;
-            padding: 0.75rem;
-            font-weight: 600;
-        }
-
-        .message-text td {
-            padding: 0.75rem;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .message-text tr:last-child td {
-            border-bottom: none;
-        }
-
         /* Welcome Message */
         .welcome-message {
             text-align: center;
-            max-width: 800px;
+            max-width: 900px;
             margin: 3rem auto;
             padding: 2rem;
         }
 
         .welcome-icon {
-            width: 120px;
-            height: 120px;
+            width: 140px;
+            height: 140px;
             margin: 0 auto 2rem;
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
-            border-radius: 40px;
+            background: var(--gradient-1);
+            border-radius: 50px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -729,110 +842,139 @@ def index():
 
         @keyframes float {
             0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-10px); }
+            50% { transform: translateY(-15px); }
         }
 
         .welcome-icon i {
-            font-size: 60px;
+            font-size: 70px;
             color: white;
         }
 
         .welcome-message h1 {
-            font-size: 3rem;
+            font-size: 3.5rem;
             margin-bottom: 1rem;
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            background: var(--gradient-1);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
         .features-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin: 2rem 0;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1.5rem;
+            margin: 3rem 0;
         }
 
         .feature-card {
-            background: var(--bg-secondary);
-            padding: 1.5rem;
-            border-radius: 16px;
-            border: 1px solid var(--border);
+            background: var(--bg-card);
+            padding: 2rem 1.5rem;
+            border-radius: 24px;
+            border: 2px solid var(--border);
+            transition: all 0.3s;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+            border-color: var(--primary);
+            box-shadow: var(--shadow);
         }
 
         .feature-card i {
-            font-size: 2rem;
+            font-size: 2.5rem;
             color: var(--primary);
-            margin-bottom: 1rem;
+            margin-bottom: 1.2rem;
+        }
+
+        .feature-card h3 {
+            font-size: 1.3rem;
+            margin-bottom: 0.8rem;
+        }
+
+        .feature-card p {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
         }
 
         /* Input Area */
         .input-container {
-            padding: 1rem 2rem;
-            background: var(--bg-secondary);
-            border-top: 1px solid var(--border);
+            padding: 1.5rem 2rem;
+            background: var(--bg-card);
+            border-top: 2px solid var(--border);
         }
 
         .input-wrapper {
             display: flex;
-            gap: 1rem;
+            gap: 1.2rem;
             align-items: flex-end;
-            background: var(--bg-primary);
-            border-radius: 20px;
-            padding: 0.5rem;
-            border: 1px solid var(--border);
+            background: var(--bg-input);
+            border-radius: 24px;
+            padding: 0.8rem;
+            border: 2px solid var(--border);
+            transition: all 0.3s;
         }
 
         .input-wrapper:focus-within {
             border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
         }
 
         textarea {
             flex: 1;
             background: transparent;
             border: none;
-            padding: 0.75rem 1rem;
+            padding: 0.8rem 1.2rem;
             color: var(--text-primary);
             font-family: 'Cairo', sans-serif;
-            font-size: 0.95rem;
+            font-size: 1rem;
             resize: none;
-            max-height: 120px;
+            max-height: 150px;
         }
 
         textarea:focus {
             outline: none;
         }
 
+        textarea::placeholder {
+            color: var(--text-secondary);
+            opacity: 0.7;
+        }
+
         .input-actions {
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.8rem;
         }
 
         .input-btn {
-            width: 45px;
-            height: 45px;
+            width: 50px;
+            height: 50px;
             border: none;
-            border-radius: 14px;
+            border-radius: 16px;
             background: transparent;
             color: var(--text-primary);
             cursor: pointer;
             transition: all 0.3s;
-            border: 1px solid var(--border);
+            border: 2px solid var(--border);
             display: flex;
             align-items: center;
             justify-content: center;
+            font-size: 1.2rem;
         }
 
         .input-btn:hover:not(:disabled) {
             background: var(--primary);
             border-color: var(--primary);
+            color: white;
         }
 
         .input-btn.send {
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            background: var(--gradient-1);
             border: none;
             color: white;
+        }
+
+        .input-btn.send:hover:not(:disabled) {
+            transform: scale(1.1);
         }
 
         .input-btn.stop {
@@ -844,28 +986,29 @@ def index():
         .input-footer {
             display: flex;
             justify-content: space-between;
-            margin-top: 0.5rem;
-            font-size: 0.8rem;
+            margin-top: 0.8rem;
+            font-size: 0.85rem;
             color: var(--text-secondary);
+            padding: 0 0.5rem;
         }
 
         .typing-indicator {
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.8rem;
         }
 
         .typing-dots {
             display: flex;
-            gap: 3px;
+            gap: 4px;
         }
 
         .typing-dots span {
-            width: 6px;
-            height: 6px;
+            width: 8px;
+            height: 8px;
             background: var(--primary);
             border-radius: 50%;
-            animation: typing 1s infinite;
+            animation: typing 1.2s infinite;
         }
 
         .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
@@ -873,22 +1016,26 @@ def index():
 
         @keyframes typing {
             0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-5px); }
+            50% { transform: translateY(-8px); }
         }
 
         /* Scrollbar */
         ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
+            width: 8px;
+            height: 8px;
         }
 
         ::-webkit-scrollbar-track {
-            background: var(--bg-primary);
+            background: var(--bg-input);
         }
 
         ::-webkit-scrollbar-thumb {
             background: var(--primary);
-            border-radius: 3px;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--secondary);
         }
 
         /* Responsive */
@@ -901,7 +1048,15 @@ def index():
                 font-size: 1.2rem;
             }
             
+            .logo-badge {
+                display: none;
+            }
+            
             .nav-tabs {
+                display: none;
+            }
+            
+            .status span {
                 display: none;
             }
             
@@ -918,16 +1073,20 @@ def index():
             }
             
             .welcome-message h1 {
-                font-size: 2rem;
+                font-size: 2.5rem;
             }
             
             .features-grid {
                 grid-template-columns: 1fr;
             }
+            
+            .input-container {
+                padding: 1rem;
+            }
         }
     </style>
 </head>
-<body>
+<body data-theme="dark">
     <div class="app">
         <!-- Navbar -->
         <div class="navbar">
@@ -939,19 +1098,23 @@ def index():
                     <div class="logo-icon">
                         <i class="fas fa-brain"></i>
                     </div>
-                    <span class="logo-text">Soft Atlas Expert</span>
+                    <span class="logo-text">Soft Atlas Pro</span>
+                    <span class="logo-badge">خبير</span>
                 </div>
             </div>
             
             <div class="nav-tabs">
                 <div class="nav-tab active" onclick="switchTab('chat', this)">
-                    <i class="fas fa-comment"></i> تحليل ونقاش
+                    <i class="fas fa-comment"></i> تحليل
                 </div>
                 <div class="nav-tab" onclick="switchTab('code', this)">
-                    <i class="fas fa-code"></i> برمجة متقدمة
+                    <i class="fas fa-code"></i> برمجة
                 </div>
                 <div class="nav-tab" onclick="switchTab('compare', this)">
-                    <i class="fas fa-scale-balanced"></i> مقارنات
+                    <i class="fas fa-scale-balanced"></i> مقارنة
+                </div>
+                <div class="nav-tab" onclick="switchTab('stats', this)">
+                    <i class="fas fa-chart-bar"></i> إحصائيات
                 </div>
             </div>
             
@@ -992,7 +1155,7 @@ def index():
                 <div class="chat-header">
                     <div class="chat-title">
                         <span class="expert-badge">
-                            <i class="fas fa-crown"></i> خبير متخصص
+                            <i class="fas fa-crown"></i> خبير محترف
                         </span>
                     </div>
                     <button class="clear-chat" onclick="clearChat()">
@@ -1006,34 +1169,34 @@ def index():
                         <div class="welcome-icon">
                             <i class="fas fa-robot"></i>
                         </div>
-                        <h1>Soft Atlas Expert</h1>
-                        <p>خبيرك المتخصص في التحليل والبرمجة والنقاش العميق</p>
+                        <h1>Soft Atlas Pro</h1>
+                        <p>خبيرك المحترف للتحليل والبرمجة والإحصائيات</p>
                         
                         <div class="features-grid">
                             <div class="feature-card">
                                 <i class="fas fa-chart-line"></i>
                                 <h3>تحليل عميق</h3>
-                                <p>تحليل من 7 جوانب مختلفة مع إحصائيات</p>
+                                <p>تحليل شامل من جميع الجوانب مع جداول وإحصائيات</p>
                             </div>
                             <div class="feature-card">
                                 <i class="fas fa-code"></i>
-                                <h3>أكواد احترافية</h3>
-                                <p>كود كامل حتى 5000 سطر مع شرح</p>
+                                <h3>برمجة احترافية</h3>
+                                <p>أكواد كاملة مع شرح تفصيلي وأمثلة عملية</p>
                             </div>
                             <div class="feature-card">
                                 <i class="fas fa-scale-balanced"></i>
                                 <h3>مقارنات دقيقة</h3>
-                                <p>جداول مقارنة مفصلة مع توصيات</p>
+                                <p>جداول مقارنة مفصلة مع توصيات مخصصة</p>
                             </div>
                             <div class="feature-card">
-                                <i class="fas fa-message"></i>
-                                <h3>نقاش معمق</h3>
-                                <p>مناقشة جميع الجوانب بالإيجابيات والسلبيات</p>
+                                <i class="fas fa-chart-pie"></i>
+                                <h3>إحصائيات متقدمة</h3>
+                                <p>بيانات رقمية دقيقة مع تحليل الاتجاهات</p>
                             </div>
                         </div>
                         
                         <div style="margin-top: 2rem; color: var(--text-secondary);">
-                            <i class="fas fa-arrow-down"></i> اطرح سؤالك للتحليل العميق
+                            <i class="fas fa-arrow-down"></i> اطرح سؤالك للحصول على تحليل احترافي
                         </div>
                     </div>
                 </div>
@@ -1043,7 +1206,7 @@ def index():
                     <div class="input-wrapper">
                         <textarea 
                             id="messageInput" 
-                            placeholder="اكتب سؤالك هنا... سأقدم تحليلاً شاملاً من جميع الجوانب"
+                            placeholder="اكتب سؤالك هنا... سأقدم تحليلاً شاملاً مع جداول وإحصائيات"
                             rows="1"
                             oninput="autoResize(this)"
                         ></textarea>
@@ -1058,7 +1221,7 @@ def index():
                     </div>
                     <div class="input-footer">
                         <div class="typing-indicator" id="typingIndicator"></div>
-                        <span>Enter للإرسال • Shift+Enter سطر جديد</span>
+                        <span><i class="fas fa-keyboard"></i> Enter للإرسال • Shift+Enter سطر جديد</span>
                     </div>
                 </div>
             </div>
@@ -1115,24 +1278,26 @@ def index():
             const root = document.documentElement;
             
             if (currentTheme === 'light') {
-                root.style.setProperty('--bg-primary', '#f8fafc');
-                root.style.setProperty('--bg-secondary', '#f1f5f9');
-                root.style.setProperty('--text-primary', '#0f172a');
-                root.style.setProperty('--text-secondary', '#475569');
-                root.style.setProperty('--border', '#cbd5e1');
-                root.style.setProperty('--card-bg', '#ffffff');
-                root.style.setProperty('--hover-bg', '#e2e8f0');
-                root.style.setProperty('--code-bg', '#f1f5f9');
+                root.style.setProperty('--bg-dark', '#f9fafb');
+                root.style.setProperty('--bg-card', '#ffffff');
+                root.style.setProperty('--bg-input', '#f3f4f6');
+                root.style.setProperty('--text-primary', '#111827');
+                root.style.setProperty('--text-secondary', '#4b5563');
+                root.style.setProperty('--border', '#e5e7eb');
+                root.style.setProperty('--border-light', '#d1d5db');
+                root.style.setProperty('--hover', '#e5e7eb');
+                root.style.setProperty('--code-bg', '#f3f4f6');
                 document.querySelector('.theme-toggle i').className = 'fas fa-sun';
             } else {
-                root.style.setProperty('--bg-primary', '#0f172a');
-                root.style.setProperty('--bg-secondary', '#1e293b');
-                root.style.setProperty('--text-primary', '#f8fafc');
-                root.style.setProperty('--text-secondary', '#94a3b8');
-                root.style.setProperty('--border', '#334155');
-                root.style.setProperty('--card-bg', '#1e293b');
-                root.style.setProperty('--hover-bg', '#2d3748');
-                root.style.setProperty('--code-bg', '#0f172a');
+                root.style.setProperty('--bg-dark', '#0a0c14');
+                root.style.setProperty('--bg-card', '#111827');
+                root.style.setProperty('--bg-input', '#1a1f2e');
+                root.style.setProperty('--text-primary', '#f3f4f6');
+                root.style.setProperty('--text-secondary', '#9ca3af');
+                root.style.setProperty('--border', '#1f2937');
+                root.style.setProperty('--border-light', '#374151');
+                root.style.setProperty('--hover', '#2d3748');
+                root.style.setProperty('--code-bg', '#0a0c14');
                 document.querySelector('.theme-toggle i').className = 'fas fa-moon';
             }
         }
@@ -1142,12 +1307,18 @@ def index():
             element.classList.add('active');
             
             const input = document.getElementById('messageInput');
-            if (tab === 'code') {
-                input.placeholder = 'اكتب متطلبات البرنامج... سأقدم كود كامل حتى 5000 سطر';
-            } else if (tab === 'compare') {
-                input.placeholder = 'ماذا تريد مقارنته؟ سأقدم جدول مقارنة مفصل';
-            } else {
-                input.placeholder = 'اكتب موضوع التحليل... سأحلله من جميع الجوانب';
+            switch(tab) {
+                case 'code':
+                    input.placeholder = 'اكثر متطلبات البرنامج... سأقدم كود كامل مع شرح تفصيلي';
+                    break;
+                case 'compare':
+                    input.placeholder = 'ماذا تريد مقارنته؟ سأقدم جدول مقارنة شامل';
+                    break;
+                case 'stats':
+                    input.placeholder = 'ما الإحصائيات التي تريدها؟ سأقدم بيانات دقيقة';
+                    break;
+                default:
+                    input.placeholder = 'اكثر موضوع التحليل... سأحلله من جميع الجوانب';
             }
         }
         
@@ -1184,7 +1355,7 @@ def index():
             
             div.innerHTML = `
                 <div class="conv-title">
-                    <span>${escapeHtml(conv.preview.substring(0, 30))}...</span>
+                    <span>${escapeHtml(conv.preview.substring(0, 35))}...</span>
                     <button class="conv-delete" onclick="deleteConversation('${conv.id}', event)">
                         <i class="fas fa-trash"></i>
                     </button>
@@ -1340,7 +1511,7 @@ def index():
                 </div>
                 <div class="message-content">
                     <div class="message-header">
-                        <span class="sender-name">Soft Atlas Expert</span>
+                        <span class="sender-name">Soft Atlas Pro</span>
                         <span>${timeStr}</span>
                     </div>
                     <div class="message-text">${formattedMessage}</div>
@@ -1370,7 +1541,7 @@ def index():
                 copyBtn.innerHTML = '<i class="fas fa-copy"></i> نسخ الكود';
                 copyBtn.onclick = () => {
                     navigator.clipboard.writeText(block.textContent);
-                    showNotification('تم نسخ الكود');
+                    showNotification('✅ تم نسخ الكود');
                 };
                 pre.appendChild(copyBtn);
             });
@@ -1386,7 +1557,7 @@ def index():
         function copyMessage(button) {
             const text = button.closest('.message-content').querySelector('.message-text').innerText;
             navigator.clipboard.writeText(text).then(() => {
-                showNotification('تم نسخ الإجابة');
+                showNotification('✅ تم نسخ الإجابة');
             });
         }
         
@@ -1399,7 +1570,7 @@ def index():
                     allCode += block.textContent + '\\n\\n';
                 });
                 navigator.clipboard.writeText(allCode).then(() => {
-                    showNotification('تم نسخ كل الأكواد');
+                    showNotification('✅ تم نسخ الأكواد');
                 });
             } else {
                 copyMessage(button);
@@ -1449,7 +1620,7 @@ def index():
                             </div>
                             <div class="message-content">
                                 <div class="message-header">
-                                    <span class="sender-name">Soft Atlas Expert</span>
+                                    <span class="sender-name">Soft Atlas Pro</span>
                                     <span>${new Date().toLocaleString('ar-SA', { hour: '2-digit', minute: '2-digit' })}</span>
                                 </div>
                                 <div class="message-text"></div>
@@ -1499,7 +1670,7 @@ def index():
                 hideTypingIndicator();
                 
                 if (!assistantMessage) {
-                    displayAssistantMessage('⚠️ حدث خطأ في الاتصال. جاري إعادة المحاولة...');
+                    displayAssistantMessage('⚠️ عذراً، حدث خطأ في الاتصال. جاري إعادة المحاولة...');
                 }
             };
         }
@@ -1514,7 +1685,7 @@ def index():
                     document.getElementById('stopBtn').style.display = 'none';
                     isProcessing = false;
                     document.getElementById('sendBtn').disabled = false;
-                    showNotification('تم إيقاف التوليد');
+                    showNotification('⏹️ تم إيقاف التوليد');
                 });
             }
         }
@@ -1535,7 +1706,7 @@ def index():
         
         function autoResize(textarea) {
             textarea.style.height = 'auto';
-            textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+            textarea.style.height = Math.min(textarea.scrollHeight, 150) + 'px';
         }
         
         function scrollToBottom() {
@@ -1555,7 +1726,7 @@ def index():
 
 @app.route('/api/chat/stream')
 def chat_stream():
-    """نقطة نهاية التدفق مع إمكانية الإيقاف"""
+    """نقطة نهاية التدفق المحسنة"""
     message = request.args.get('message', '').strip()
     conversation_id = session.get('conversation_id')
     stream_id = request.args.get('stream_id', str(uuid.uuid4()))
@@ -1563,12 +1734,10 @@ def chat_stream():
     if not message:
         return jsonify({'error': 'الرجاء إدخال رسالة'}), 400
     
-    # إنشاء flag للإيقاف
     active_streams[stream_id] = {'stopped': False}
     
     def generate():
         try:
-            # تخزين رسالة المستخدم
             user_message = {
                 'role': 'user',
                 'content': message,
@@ -1580,26 +1749,31 @@ def chat_stream():
             
             conversations[conversation_id].append(user_message)
             
-            # تحضير الرسائل
             messages_for_api = [
                 {'role': msg['role'], 'content': msg['content']}
                 for msg in conversations[conversation_id]
             ]
             
             full_response = ""
+            chunk_count = 0
+            last_yield = time.time()
             
-            # توليد الرد
-            for chunk in generate_expert_response(messages_for_api, stream_id):
+            for chunk in generate_professional_response(messages_for_api, stream_id):
                 if stream_id in active_streams and active_streams[stream_id].get('stopped', False):
-                    full_response += "\n\n**[تم إيقاف التوليد]**"
-                    yield f"data: {json.dumps({'chunk': '**[تم إيقاف التوليد]**'})}\n\n"
                     break
+                
+                if chunk:
+                    full_response += chunk
+                    chunk_count += 1
+                    yield f"data: {json.dumps({'chunk': chunk})}\n\n"
                     
-                full_response += chunk
-                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+                    # إرسال ping كل 10 ثواني للحفاظ على الاتصال
+                    if time.time() - last_yield > 10:
+                        yield f"data: {json.dumps({'ping': True})}\n\n"
+                        last_yield = time.time()
             
-            # تخزين الرد إذا لم يتم إيقافه
-            if not active_streams.get(stream_id, {}).get('stopped', False):
+            # تخزين الرد الكامل
+            if not active_streams.get(stream_id, {}).get('stopped', False) and full_response:
                 assistant_message = {
                     'role': 'assistant',
                     'content': full_response,
@@ -1610,7 +1784,6 @@ def chat_stream():
             yield f"data: {json.dumps({'done': True})}\n\n"
             
         finally:
-            # تنظيف
             if stream_id in active_streams:
                 del active_streams[stream_id]
     
@@ -1640,7 +1813,7 @@ def list_conversations():
             first_msg = messages[0]['content']
             conv_list.append({
                 'id': conv_id,
-                'preview': first_msg[:50] + '...' if len(first_msg) > 50 else first_msg,
+                'preview': first_msg[:60] + '...' if len(first_msg) > 60 else first_msg,
                 'timestamp': messages[0]['timestamp'],
                 'message_count': len(messages) // 2
             })
@@ -1681,18 +1854,15 @@ def clear_conversation():
 
 if __name__ == '__main__':
     print("="*80)
-    print("🚀 Soft Atlas AI Expert - النسخة النهائية المحترفة")
+    print("🚀 Soft Atlas AI Pro - النسخة النهائية المحترفة")
     print("="*80)
     print("✅ تم حل جميع المشاكل:")
     print("   • محادثة جديدة تعمل فوراً")
-    print("   • إجابات دقيقة وطويلة بدون تقطع")
-    print("   • أكواد كاملة حتى 5000 سطر")
-    print("   • تحليل من 7 جوانب مختلفة")
-    print("   • جداول مقارنة وإحصائيات")
-    print("   • زر إيقاف التوليد")
-    print("   • زر نسخ الإجابة والكود")
-    print("   • تصميم متجاوب مع الجوال")
-    print("   • تسجيل تلقائي للمحادثات")
+    print("   • إجابات كاملة بدون تقطع (مع ping للحفاظ على الاتصال)")
+    print("   • جداول وإحصائيات احترافية")
+    print("   • أكواد كاملة مع نسخ")
+    print("   • تحليل من جميع الجوانب")
+    print("   • تصميم محترف متجاوب")
     print("="*80)
     print("🌐 الخادم: http://localhost:5000")
     print("="*80)
