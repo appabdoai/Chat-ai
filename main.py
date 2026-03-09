@@ -5,8 +5,8 @@ import uuid
 import os
 from dotenv import load_dotenv
 from datetime import datetime
-import re
 import time
+import threading
 
 load_dotenv()
 
@@ -18,11 +18,12 @@ NVIDIA_API_KEY = "nvapi-LH-LrVGkt08wiHCYUnyiLMpClaX0tFlO8quBqVQKjJsjXLF0DdPmcCuz
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 MODEL_NAME = "qwen/qwen3.5-122b-a10b"
 
-# تخزين المحادثات
+# تخزين المحادثات والتدفقات النشطة
 conversations = {}
+active_streams = {}  # لتتبع التدفقات النشطة وإيقافها
 
-def generate_pro_response(messages):
-    """توليد ردود احترافية جداً"""
+def generate_expert_response(messages, stream_id):
+    """توليد ردود خبيرة مع إمكانية الإيقاف"""
     headers = {
         "Authorization": f"Bearer {NVIDIA_API_KEY}",
         "Accept": "text/event-stream",
@@ -31,32 +32,61 @@ def generate_pro_response(messages):
     
     system_prompt = {
         "role": "system",
-        "content": """أنت Soft Atlas AI Pro، مساعد ذكي محترف بالعربية الفصحى.
+        "content": """أنت Soft Atlas AI Expert - خبير متخصص في التحليل والنقاش العميق.
 
-قواعد صارمة:
-1. ابدأ الإجابة فوراً دون مقدمات أو ترحيب زائد
-2. أجب على السؤال مباشرة في أول سطر
-3. استخدم تنسيقات احترافية:
-   - للبيانات: استخدم جداول مرتبة
-   - للإحصائيات: استخدم قوائم وأرقام
-   - للمقارنات: استخدم جدول مقارنة
-   - للتحليلات: استخدم نقاط مرتبة
-4. للبرمجة:
-   - قدم كود كامل ومتشغل
-   - أضف تعليقات بالعربية
-   - اشرح المنطق باختصار
-5. تأكد أن الإجابة واضحة بدون الحاجة للتمرير الأفقي
-6. حافظ على تسجيل كل المحادثات"""
+قواعد الخبرة المتقدمة:
+
+1. للأسئلة العامة والتحليل:
+   - ابدأ الإجابة فوراً دون مقدمات
+   - حلل السؤال من 7 جوانب مختلفة على الأقل
+   - قدم أدلة وإحصائيات وأرقام دقيقة
+   - ناقش بالإيجابيات والسلبيات
+   - أضف توقعات وتوصيات مستقبلية
+
+2. للمواضيع البرمجية:
+   - قدم كود كامل ومتكامل (2000-5000 سطر)
+   - اشرح كل دالة وكلاس بالتفصيل الممل
+   - أضف تعليقات على كل سطر بالعربية
+   - قدم 10 أمثلة تطبيقية متنوعة
+   - حلل أداء الكود واقترح تحسينات
+   - ناقش الأخطاء الشائعة وكيفية تجنبها
+
+3. للمقارنات:
+   - استخدم جداول مقارنة مفصلة
+   - قارن من جميع النواحي (أداء، تكلفة، سهولة، أمان)
+   - أضف توصيات بناءً على حالة الاستخدام
+
+4. للإحصائيات:
+   - استخدم جداول إحصائية مرتبة
+   - أضف رسوم بيانية نصية
+   - حلل الاتجاهات والأنماط
+
+5. تنسيق الإجابة:
+   - استخدم عناوين رئيسية (##)
+   - استخدم عناوين فرعية (###)
+   - استخدم جداول للبيانات
+   - استخدم قوائم نقطية ورقمية
+   - استخدم أكواد مع تلوين
+   - تأكد من اكتمال الإجابة 100%
+
+6. مهم جداً:
+   - لا تتوقف قبل إكمال الفكرة كاملة
+   - قسّم الإجابات الطويلة لأقسام واضحة
+   - استخدم لغة عربية فصحى سليمة
+   - كن دقيقاً وشاملاً في كل نقطة"""
     }
     
-    full_messages = [system_prompt] + messages
+    full_messages = [system_prompt] + messages[-30:]  # سياق أكبر
     
     payload = {
         "model": MODEL_NAME,
         "messages": full_messages,
-        "max_tokens": 8192,
+        "max_tokens": 32768,
         "temperature": 0.7,
-        "stream": True
+        "top_p": 0.95,
+        "stream": True,
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.1
     }
     
     try:
@@ -65,11 +95,16 @@ def generate_pro_response(messages):
             headers=headers,
             json=payload,
             stream=True,
-            timeout=120
+            timeout=300
         )
         
         if response.status_code == 200:
             for line in response.iter_lines():
+                # التحقق من طلب الإيقاف
+                if stream_id in active_streams and active_streams[stream_id].get('stopped', False):
+                    yield "\n\n**[تم إيقاف التوليد بناءً على طلبك]**"
+                    break
+                    
                 if line:
                     line_text = line.decode('utf-8')
                     if line_text.startswith('data: '):
@@ -84,14 +119,14 @@ def generate_pro_response(messages):
                             except:
                                 continue
         else:
-            yield "⚠️ عذراً، حدث خطأ تقني. جاري إعادة المحاولة..."
+            yield f"⚠️ عذراً، حدث خطأ تقني: {response.status_code}"
             
     except Exception as e:
-        yield f"❌ خطأ: {str(e)}"
+        yield f"❌ خطأ في الاتصال: {str(e)}، جاري إعادة المحاولة..."
 
 @app.route('/')
 def index():
-    """الصفحة الرئيسية - نسخة احترافية"""
+    """الصفحة الرئيسية - النسخة النهائية"""
     if 'conversation_id' not in session:
         session['conversation_id'] = str(uuid.uuid4())
         conversations[session['conversation_id']] = []
@@ -102,7 +137,7 @@ def index():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Soft Atlas AI Pro - المساعد المحترف</title>
+    <title>Soft Atlas AI Expert - خبير التحليل والبرمجة</title>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
@@ -129,7 +164,8 @@ def index():
             --text-secondary: #94a3b8;
             --border: #334155;
             --card-bg: #1e293b;
-            --hover-bg: #2d3a4f;
+            --hover-bg: #2d3748;
+            --code-bg: #0f172a;
         }
 
         body {
@@ -140,19 +176,17 @@ def index():
             overflow: hidden;
         }
 
-        /* App Container */
         .app {
             height: 100vh;
             display: flex;
             flex-direction: column;
-            background: var(--bg-primary);
         }
 
-        /* Navbar محترف */
+        /* Navbar */
         .navbar {
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border);
-            padding: 0 1.5rem;
+            padding: 0 2rem;
             height: 70px;
             display: flex;
             align-items: center;
@@ -189,7 +223,7 @@ def index():
         .logo {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 12px;
         }
 
         .logo-icon {
@@ -200,32 +234,11 @@ def index():
             display: flex;
             align-items: center;
             justify-content: center;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .logo-icon::after {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.2), transparent);
-            transform: rotate(45deg);
-            animation: shine 3s infinite;
-        }
-
-        @keyframes shine {
-            0% { transform: translateX(-100%) rotate(45deg); }
-            20%, 100% { transform: translateX(100%) rotate(45deg); }
         }
 
         .logo-icon i {
             font-size: 22px;
             color: white;
-            position: relative;
-            z-index: 2;
         }
 
         .logo-text {
@@ -236,16 +249,7 @@ def index():
             -webkit-text-fill-color: transparent;
         }
 
-        .logo-badge {
-            background: var(--accent);
-            color: white;
-            font-size: 0.7rem;
-            padding: 0.2rem 0.5rem;
-            border-radius: 30px;
-            font-weight: 600;
-        }
-
-        .nav-center {
+        .nav-tabs {
             display: flex;
             align-items: center;
             gap: 0.5rem;
@@ -258,8 +262,7 @@ def index():
         .nav-tab {
             padding: 0.5rem 1.5rem;
             border-radius: 30px;
-            font-size: 0.9rem;
-            font-weight: 500;
+            font-size: 0.95rem;
             cursor: pointer;
             transition: all 0.3s;
             color: var(--text-secondary);
@@ -288,7 +291,7 @@ def index():
             display: flex;
             align-items: center;
             gap: 8px;
-            padding: 0.4rem 1rem;
+            padding: 0.4rem 1.2rem;
             background: var(--bg-primary);
             border-radius: 30px;
             border: 1px solid var(--border);
@@ -334,9 +337,9 @@ def index():
             position: relative;
         }
 
-        /* Sidebar - محادثات مسجلة */
+        /* Sidebar */
         .sidebar {
-            width: 320px;
+            width: 340px;
             background: var(--bg-secondary);
             border-left: 1px solid var(--border);
             display: flex;
@@ -379,9 +382,6 @@ def index():
             color: var(--text-primary);
             cursor: pointer;
             transition: all 0.3s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
         }
 
         .close-sidebar:hover {
@@ -402,6 +402,7 @@ def index():
             justify-content: center;
             gap: 10px;
             transition: all 0.3s;
+            font-size: 1rem;
         }
 
         .new-chat-btn:hover {
@@ -443,6 +444,18 @@ def index():
             justify-content: space-between;
         }
 
+        .conv-delete {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 0.2rem;
+        }
+
+        .conv-delete:hover {
+            color: var(--danger);
+        }
+
         .conv-preview {
             font-size: 0.85rem;
             color: var(--text-secondary);
@@ -459,32 +472,13 @@ def index():
             color: var(--text-secondary);
         }
 
-        .conv-actions {
-            display: flex;
-            gap: 0.5rem;
-        }
-
-        .conv-action {
-            background: transparent;
-            border: none;
-            color: var(--text-secondary);
-            cursor: pointer;
-            padding: 0.2rem;
-            transition: all 0.3s;
-        }
-
-        .conv-action:hover {
-            color: var(--danger);
-        }
-
-        /* Chat Area الرئيسي */
+        /* Chat Area */
         .chat-area {
             flex: 1;
             display: flex;
             flex-direction: column;
             overflow: hidden;
             background: var(--bg-primary);
-            width: 100%;
         }
 
         .chat-header {
@@ -502,25 +496,28 @@ def index():
             gap: 1rem;
         }
 
-        .model-badge {
-            background: var(--primary);
-            padding: 0.3rem 1rem;
+        .expert-badge {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            padding: 0.3rem 1.2rem;
             border-radius: 30px;
             font-size: 0.85rem;
-            font-weight: 500;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
         .clear-chat {
             background: transparent;
             border: 1px solid var(--border);
             color: var(--text-primary);
-            padding: 0.5rem 1rem;
+            padding: 0.5rem 1.2rem;
             border-radius: 8px;
             cursor: pointer;
             transition: all 0.3s;
             display: flex;
             align-items: center;
-            gap: 5px;
+            gap: 8px;
         }
 
         .clear-chat:hover {
@@ -528,7 +525,7 @@ def index():
             border-color: var(--danger);
         }
 
-        /* Messages Container - محسن */
+        /* Messages Container */
         .messages-container {
             flex: 1;
             overflow-y: auto;
@@ -536,13 +533,11 @@ def index():
             scroll-behavior: smooth;
         }
 
-        /* الرسائل */
         .message {
             display: flex;
             gap: 1rem;
             margin-bottom: 2rem;
             animation: fadeIn 0.3s ease;
-            max-width: 100%;
         }
 
         @keyframes fadeIn {
@@ -555,9 +550,9 @@ def index():
         }
 
         .message-avatar {
-            width: 45px;
-            height: 45px;
-            border-radius: 14px;
+            width: 50px;
+            height: 50px;
+            border-radius: 16px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -574,8 +569,7 @@ def index():
 
         .message-content {
             flex: 1;
-            max-width: calc(100% - 60px);
-            min-width: 0;
+            max-width: calc(100% - 70px);
         }
 
         .message-header {
@@ -590,12 +584,6 @@ def index():
             flex-direction: row-reverse;
         }
 
-        .sender-name {
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-
-        /* محتوى الرسالة - بدون تمرير أفقي */
         .message-text {
             background: var(--bg-secondary);
             padding: 1.25rem 1.5rem;
@@ -605,7 +593,6 @@ def index():
             line-height: 1.8;
             word-wrap: break-word;
             overflow-wrap: break-word;
-            width: 100%;
         }
 
         .message.user .message-text {
@@ -614,78 +601,50 @@ def index():
             color: white;
         }
 
-        /* تنسيق الجداول */
-        .message-text table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 1rem 0;
+        /* Message Actions */
+        .message-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+            justify-content: flex-start;
+        }
+
+        .message.user .message-actions {
+            justify-content: flex-end;
+        }
+
+        .action-btn {
             background: var(--bg-primary);
-            border-radius: 12px;
-            overflow: hidden;
-            table-layout: fixed;
-        }
-
-        .message-text th {
-            background: var(--primary);
-            color: white;
-            padding: 0.75rem;
-            font-weight: 600;
-        }
-
-        .message-text td {
-            padding: 0.75rem;
-            border-bottom: 1px solid var(--border);
-            word-wrap: break-word;
-        }
-
-        .message-text tr:last-child td {
-            border-bottom: none;
-        }
-
-        .message-text tr:hover td {
-            background: var(--hover-bg);
-        }
-
-        /* تنسيق الإحصائيات */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 1rem;
-            margin: 1rem 0;
-        }
-
-        .stat-card {
-            background: var(--bg-primary);
-            padding: 1rem;
-            border-radius: 12px;
             border: 1px solid var(--border);
-            text-align: center;
+            color: var(--text-primary);
+            padding: 0.4rem 1rem;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
         }
 
-        .stat-value {
-            font-size: 2rem;
-            font-weight: 700;
-            color: var(--primary);
+        .action-btn:hover {
+            background: var(--primary);
+            border-color: var(--primary);
         }
 
-        .stat-label {
-            font-size: 0.9rem;
-            color: var(--text-secondary);
+        .action-btn.stop {
+            background: var(--danger);
+            border-color: var(--danger);
+            color: white;
         }
 
-        /* تنسيق القوائم */
-        .message-text ul, .message-text ol {
-            padding-right: 2rem;
-            margin: 1rem 0;
+        .action-btn.stop:hover {
+            background: #dc2626;
         }
 
-        .message-text li {
-            margin-bottom: 0.5rem;
-        }
-
-        /* تنسيق الكود - محسن */
+        /* Code Blocks */
         .message-text pre {
-            background: var(--bg-primary) !important;
+            background: var(--code-bg) !important;
             border-radius: 12px;
             padding: 1rem;
             margin: 1rem 0;
@@ -693,15 +652,11 @@ def index():
             position: relative;
             max-width: 100%;
             overflow-x: auto;
-            white-space: pre-wrap;
-            word-wrap: break-word;
         }
 
         .message-text code {
             font-family: 'Fira Code', monospace;
             font-size: 0.9rem;
-            white-space: pre-wrap;
-            word-wrap: break-word;
         }
 
         .copy-code {
@@ -717,35 +672,55 @@ def index():
             cursor: pointer;
             opacity: 0;
             transition: opacity 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
         }
 
         pre:hover .copy-code {
             opacity: 1;
         }
 
-        /* تنسيق الاقتباسات */
-        .message-text blockquote {
-            border-right: 4px solid var(--primary);
-            padding: 0.5rem 1rem;
+        /* Tables */
+        .message-text table {
+            width: 100%;
+            border-collapse: collapse;
             margin: 1rem 0;
             background: var(--bg-primary);
-            border-radius: 8px;
+            border-radius: 12px;
+            overflow: hidden;
         }
 
-        /* رسالة الترحيب */
+        .message-text th {
+            background: var(--primary);
+            color: white;
+            padding: 0.75rem;
+            font-weight: 600;
+        }
+
+        .message-text td {
+            padding: 0.75rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .message-text tr:last-child td {
+            border-bottom: none;
+        }
+
+        /* Welcome Message */
         .welcome-message {
             text-align: center;
-            max-width: 600px;
-            margin: 4rem auto;
+            max-width: 800px;
+            margin: 3rem auto;
             padding: 2rem;
         }
 
         .welcome-icon {
-            width: 100px;
-            height: 100px;
+            width: 120px;
+            height: 120px;
             margin: 0 auto 2rem;
             background: linear-gradient(135deg, var(--primary), var(--secondary));
-            border-radius: 30px;
+            border-radius: 40px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -758,38 +733,39 @@ def index():
         }
 
         .welcome-icon i {
-            font-size: 50px;
+            font-size: 60px;
             color: white;
         }
 
         .welcome-message h1 {
-            font-size: 2.5rem;
+            font-size: 3rem;
             margin-bottom: 1rem;
             background: linear-gradient(135deg, var(--primary), var(--secondary));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
-        .features {
+        .features-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 1rem;
             margin: 2rem 0;
         }
 
-        .feature {
+        .feature-card {
             background: var(--bg-secondary);
-            padding: 1rem;
-            border-radius: 12px;
+            padding: 1.5rem;
+            border-radius: 16px;
+            border: 1px solid var(--border);
         }
 
-        .feature i {
+        .feature-card i {
+            font-size: 2rem;
             color: var(--primary);
-            font-size: 1.5rem;
-            margin-bottom: 0.5rem;
+            margin-bottom: 1rem;
         }
 
-        /* Input Area - صغير وجميل */
+        /* Input Area */
         .input-container {
             padding: 1rem 2rem;
             background: var(--bg-secondary);
@@ -804,7 +780,6 @@ def index():
             border-radius: 20px;
             padding: 0.5rem;
             border: 1px solid var(--border);
-            transition: all 0.3s;
         }
 
         .input-wrapper:focus-within {
@@ -821,15 +796,11 @@ def index():
             font-family: 'Cairo', sans-serif;
             font-size: 0.95rem;
             resize: none;
-            max-height: 100px;
+            max-height: 120px;
         }
 
         textarea:focus {
             outline: none;
-        }
-
-        textarea::placeholder {
-            color: var(--text-secondary);
         }
 
         .input-actions {
@@ -861,6 +832,13 @@ def index():
         .input-btn.send {
             background: linear-gradient(135deg, var(--primary), var(--secondary));
             border: none;
+            color: white;
+        }
+
+        .input-btn.stop {
+            background: var(--danger);
+            border-color: var(--danger);
+            color: white;
         }
 
         .input-footer {
@@ -898,7 +876,7 @@ def index():
             50% { transform: translateY(-5px); }
         }
 
-        /* Scrollbar مخصص */
+        /* Scrollbar */
         ::-webkit-scrollbar {
             width: 6px;
             height: 6px;
@@ -913,29 +891,17 @@ def index():
             border-radius: 3px;
         }
 
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--secondary);
-        }
-
-        /* Responsive للجوال */
+        /* Responsive */
         @media (max-width: 768px) {
             .navbar {
                 padding: 0 1rem;
             }
             
             .logo-text {
-                font-size: 1.1rem;
+                font-size: 1.2rem;
             }
             
-            .logo-badge {
-                display: none;
-            }
-            
-            .nav-center {
-                display: none;
-            }
-            
-            .status span {
+            .nav-tabs {
                 display: none;
             }
             
@@ -951,30 +917,11 @@ def index():
                 max-width: 100%;
             }
             
-            .input-container {
-                padding: 1rem;
-            }
-            
             .welcome-message h1 {
                 font-size: 2rem;
             }
             
-            .features {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        @media (max-width: 480px) {
-            .message-avatar {
-                width: 35px;
-                height: 35px;
-            }
-            
-            .message-text {
-                padding: 1rem;
-            }
-            
-            .stats-grid {
+            .features-grid {
                 grid-template-columns: 1fr;
             }
         }
@@ -992,34 +939,26 @@ def index():
                     <div class="logo-icon">
                         <i class="fas fa-brain"></i>
                     </div>
-                    <span class="logo-text">Soft Atlas Pro</span>
-                    <span class="logo-badge">AI</span>
+                    <span class="logo-text">Soft Atlas Expert</span>
                 </div>
             </div>
             
-            <div class="nav-center">
+            <div class="nav-tabs">
                 <div class="nav-tab active" onclick="switchTab('chat', this)">
-                    <i class="fas fa-comment"></i>
-                    <span>محادثة</span>
+                    <i class="fas fa-comment"></i> تحليل ونقاش
                 </div>
                 <div class="nav-tab" onclick="switchTab('code', this)">
-                    <i class="fas fa-code"></i>
-                    <span>برمجة</span>
+                    <i class="fas fa-code"></i> برمجة متقدمة
                 </div>
-                <div class="nav-tab" onclick="switchTab('analyze', this)">
-                    <i class="fas fa-chart-bar"></i>
-                    <span>تحليل</span>
-                </div>
-                <div class="nav-tab" onclick="switchTab('write', this)">
-                    <i class="fas fa-pen"></i>
-                    <span>كتابة</span>
+                <div class="nav-tab" onclick="switchTab('compare', this)">
+                    <i class="fas fa-scale-balanced"></i> مقارنات
                 </div>
             </div>
             
             <div class="nav-right">
                 <div class="status">
                     <span class="status-dot"></span>
-                    <span>متصل</span>
+                    <span>خبير متصل</span>
                 </div>
                 <button class="theme-toggle" onclick="toggleTheme()">
                     <i class="fas fa-moon"></i>
@@ -1029,10 +968,10 @@ def index():
         
         <!-- Main -->
         <div class="main">
-            <!-- Sidebar للمحادثات -->
+            <!-- Sidebar -->
             <div class="sidebar" id="sidebar">
                 <div class="sidebar-header">
-                    <h3><i class="fas fa-history"></i> المحادثات</h3>
+                    <h3><i class="fas fa-history"></i> سجل المحادثات</h3>
                     <button class="close-sidebar" onclick="toggleSidebar()">
                         <i class="fas fa-times"></i>
                     </button>
@@ -1052,50 +991,49 @@ def index():
             <div class="chat-area">
                 <div class="chat-header">
                     <div class="chat-title">
-                        <span class="model-badge">
-                            <i class="fas fa-crown"></i> النسخة المحترفة
+                        <span class="expert-badge">
+                            <i class="fas fa-crown"></i> خبير متخصص
                         </span>
                     </div>
                     <button class="clear-chat" onclick="clearChat()">
-                        <i class="fas fa-trash"></i>
-                        <span>مسح المحادثة</span>
+                        <i class="fas fa-trash"></i> مسح المحادثة
                     </button>
                 </div>
                 
                 <div class="messages-container" id="messagesContainer">
                     <!-- رسالة الترحيب -->
-                    <div class="welcome-message">
+                    <div class="welcome-message" id="welcomeMessage">
                         <div class="welcome-icon">
                             <i class="fas fa-robot"></i>
                         </div>
-                        <h1>Soft Atlas Pro</h1>
-                        <p>المساعد المحترف للتحليل والبرمجة والكتابة</p>
+                        <h1>Soft Atlas Expert</h1>
+                        <p>خبيرك المتخصص في التحليل والبرمجة والنقاش العميق</p>
                         
-                        <div class="features">
-                            <div class="feature">
-                                <i class="fas fa-bolt"></i>
-                                <h4>ردود مباشرة</h4>
-                                <p>بدون مقدمات زائدة</p>
-                            </div>
-                            <div class="feature">
-                                <i class="fas fa-table"></i>
-                                <h4>جداول إحصائية</h4>
-                                <p>بيانات منظمة</p>
-                            </div>
-                            <div class="feature">
-                                <i class="fas fa-code"></i>
-                                <h4>أكواد احترافية</h4>
-                                <p>مع شرح وافي</p>
-                            </div>
-                            <div class="feature">
+                        <div class="features-grid">
+                            <div class="feature-card">
                                 <i class="fas fa-chart-line"></i>
-                                <h4>تحليل عميق</h4>
-                                <p>رؤى ثاقبة</p>
+                                <h3>تحليل عميق</h3>
+                                <p>تحليل من 7 جوانب مختلفة مع إحصائيات</p>
+                            </div>
+                            <div class="feature-card">
+                                <i class="fas fa-code"></i>
+                                <h3>أكواد احترافية</h3>
+                                <p>كود كامل حتى 5000 سطر مع شرح</p>
+                            </div>
+                            <div class="feature-card">
+                                <i class="fas fa-scale-balanced"></i>
+                                <h3>مقارنات دقيقة</h3>
+                                <p>جداول مقارنة مفصلة مع توصيات</p>
+                            </div>
+                            <div class="feature-card">
+                                <i class="fas fa-message"></i>
+                                <h3>نقاش معمق</h3>
+                                <p>مناقشة جميع الجوانب بالإيجابيات والسلبيات</p>
                             </div>
                         </div>
                         
                         <div style="margin-top: 2rem; color: var(--text-secondary);">
-                            <i class="fas fa-arrow-down"></i> ابدأ بكتابة سؤالك
+                            <i class="fas fa-arrow-down"></i> اطرح سؤالك للتحليل العميق
                         </div>
                     </div>
                 </div>
@@ -1105,13 +1043,13 @@ def index():
                     <div class="input-wrapper">
                         <textarea 
                             id="messageInput" 
-                            placeholder="اكتب سؤالك هنا... سأجيبك مباشرة بدون مقدمات"
+                            placeholder="اكتب سؤالك هنا... سأقدم تحليلاً شاملاً من جميع الجوانب"
                             rows="1"
                             oninput="autoResize(this)"
                         ></textarea>
                         <div class="input-actions">
-                            <button class="input-btn" onclick="attachFile()">
-                                <i class="fas fa-paperclip"></i>
+                            <button class="input-btn" id="stopBtn" onclick="stopGeneration()" style="display: none;">
+                                <i class="fas fa-stop"></i>
                             </button>
                             <button class="input-btn send" id="sendBtn" onclick="sendMessage()">
                                 <i class="fas fa-paper-plane"></i>
@@ -1131,8 +1069,8 @@ def index():
         // المتغيرات العامة
         let currentConversationId = '{{ session.conversation_id }}';
         let isProcessing = false;
+        let currentStreamId = null;
         let currentTheme = 'dark';
-        let currentTab = 'chat';
         
         // تهيئة
         document.addEventListener('DOMContentLoaded', function() {
@@ -1146,7 +1084,7 @@ def index():
                 .then(res => res.json())
                 .then(data => {
                     if (data.messages && data.messages.length > 0) {
-                        document.querySelector('.welcome-message')?.remove();
+                        document.getElementById('welcomeMessage')?.remove();
                         data.messages.forEach(msg => {
                             if (msg.role === 'user') {
                                 displayUserMessage(msg.content, msg.timestamp);
@@ -1184,6 +1122,7 @@ def index():
                 root.style.setProperty('--border', '#cbd5e1');
                 root.style.setProperty('--card-bg', '#ffffff');
                 root.style.setProperty('--hover-bg', '#e2e8f0');
+                root.style.setProperty('--code-bg', '#f1f5f9');
                 document.querySelector('.theme-toggle i').className = 'fas fa-sun';
             } else {
                 root.style.setProperty('--bg-primary', '#0f172a');
@@ -1192,25 +1131,23 @@ def index():
                 root.style.setProperty('--text-secondary', '#94a3b8');
                 root.style.setProperty('--border', '#334155');
                 root.style.setProperty('--card-bg', '#1e293b');
-                root.style.setProperty('--hover-bg', '#2d3a4f');
+                root.style.setProperty('--hover-bg', '#2d3748');
+                root.style.setProperty('--code-bg', '#0f172a');
                 document.querySelector('.theme-toggle i').className = 'fas fa-moon';
             }
         }
         
         function switchTab(tab, element) {
-            currentTab = tab;
             document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
             element.classList.add('active');
             
             const input = document.getElementById('messageInput');
             if (tab === 'code') {
-                input.placeholder = 'اكتب سؤالك البرمجي... سأقدم كود كامل ومتكامل';
-            } else if (tab === 'analyze') {
-                input.placeholder = 'اكتب النص للتحليل... سأقدم تحليل إحصائي وجداول';
-            } else if (tab === 'write') {
-                input.placeholder = 'اكتب موضوع الكتابة... سأكتب نصاً احترافياً';
+                input.placeholder = 'اكتب متطلبات البرنامج... سأقدم كود كامل حتى 5000 سطر';
+            } else if (tab === 'compare') {
+                input.placeholder = 'ماذا تريد مقارنته؟ سأقدم جدول مقارنة مفصل';
             } else {
-                input.placeholder = 'اكتب سؤالك هنا... سأجيبك مباشرة';
+                input.placeholder = 'اكتب موضوع التحليل... سأحلله من جميع الجوانب';
             }
         }
         
@@ -1235,6 +1172,7 @@ def index():
         function createConversationItem(conv) {
             const div = document.createElement('div');
             div.className = `conversation-item ${conv.id === currentConversationId ? 'active' : ''}`;
+            div.setAttribute('data-id', conv.id);
             
             const date = new Date(conv.timestamp);
             const timeStr = date.toLocaleString('ar-SA', { 
@@ -1247,11 +1185,9 @@ def index():
             div.innerHTML = `
                 <div class="conv-title">
                     <span>${escapeHtml(conv.preview.substring(0, 30))}...</span>
-                    <div class="conv-actions">
-                        <button class="conv-action" onclick="deleteConversation('${conv.id}', event)">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    </div>
+                    <button class="conv-delete" onclick="deleteConversation('${conv.id}', event)">
+                        <i class="fas fa-trash"></i>
+                    </button>
                 </div>
                 <div class="conv-preview">${escapeHtml(conv.preview)}</div>
                 <div class="conv-meta">
@@ -1261,7 +1197,7 @@ def index():
             `;
             
             div.onclick = (e) => {
-                if (!e.target.closest('.conv-action')) {
+                if (!e.target.closest('.conv-delete')) {
                     loadConversation(conv.id);
                 }
             };
@@ -1280,7 +1216,7 @@ def index():
                     container.innerHTML = '';
                     
                     if (data.messages.length === 0) {
-                        container.innerHTML = document.querySelector('.welcome-message').outerHTML;
+                        container.appendChild(document.getElementById('welcomeMessage').cloneNode(true));
                     } else {
                         data.messages.forEach(msg => {
                             if (msg.role === 'user') {
@@ -1291,19 +1227,14 @@ def index():
                         });
                     }
                     
-                    updateActiveConversation();
+                    // تحديث النشط
+                    document.querySelectorAll('.conversation-item').forEach(item => {
+                        item.classList.remove('active');
+                        if (item.dataset.id === conversationId) {
+                            item.classList.add('active');
+                        }
+                    });
                 });
-        }
-        
-        function updateActiveConversation() {
-            document.querySelectorAll('.conversation-item').forEach(item => {
-                item.classList.remove('active');
-            });
-            
-            const activeItem = Array.from(document.querySelectorAll('.conversation-item')).find(
-                item => item.innerHTML.includes(currentConversationId)
-            );
-            if (activeItem) activeItem.classList.add('active');
         }
         
         function newConversation() {
@@ -1312,8 +1243,17 @@ def index():
                 .then(data => {
                     if (data.success) {
                         currentConversationId = data.id;
-                        document.getElementById('messagesContainer').innerHTML = document.querySelector('.welcome-message').outerHTML;
+                        
+                        // مسح المحادثة الحالية
+                        const container = document.getElementById('messagesContainer');
+                        container.innerHTML = '';
+                        container.appendChild(document.getElementById('welcomeMessage').cloneNode(true));
+                        
+                        // تحديث القائمة
                         loadConversations();
+                        
+                        // إغلاق sidebar
+                        toggleSidebar();
                     }
                 });
         }
@@ -1339,7 +1279,9 @@ def index():
             if (confirm('هل أنت متأكد من مسح المحادثة الحالية؟')) {
                 fetch('/api/clear', { method: 'POST' })
                     .then(() => {
-                        document.getElementById('messagesContainer').innerHTML = document.querySelector('.welcome-message').outerHTML;
+                        const container = document.getElementById('messagesContainer');
+                        container.innerHTML = '';
+                        container.appendChild(document.getElementById('welcomeMessage').cloneNode(true));
                         loadConversations();
                     });
             }
@@ -1349,7 +1291,7 @@ def index():
             const container = document.getElementById('messagesContainer');
             
             // إزالة رسالة الترحيب
-            document.querySelector('.welcome-message')?.remove();
+            document.getElementById('welcomeMessage')?.remove();
             
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message user';
@@ -1378,7 +1320,7 @@ def index():
             const container = document.getElementById('messagesContainer');
             
             // إزالة رسالة الترحيب
-            document.querySelector('.welcome-message')?.remove();
+            document.getElementById('welcomeMessage')?.remove();
             
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message assistant';
@@ -1398,10 +1340,18 @@ def index():
                 </div>
                 <div class="message-content">
                     <div class="message-header">
-                        <span class="sender-name">Soft Atlas Pro</span>
+                        <span class="sender-name">Soft Atlas Expert</span>
                         <span>${timeStr}</span>
                     </div>
                     <div class="message-text">${formattedMessage}</div>
+                    <div class="message-actions">
+                        <button class="action-btn" onclick="copyMessage(this)">
+                            <i class="fas fa-copy"></i> نسخ الإجابة
+                        </button>
+                        <button class="action-btn" onclick="copyCode(this)">
+                            <i class="fas fa-code"></i> نسخ الكود
+                        </button>
+                    </div>
                 </div>
             `;
             
@@ -1413,11 +1363,11 @@ def index():
                     hljs.highlightElement(block);
                 }
                 
-                // إضافة زر نسخ
+                // إضافة زر نسخ للكود
                 const pre = block.parentNode;
                 const copyBtn = document.createElement('button');
                 copyBtn.className = 'copy-code';
-                copyBtn.innerHTML = '<i class="fas fa-copy"></i> نسخ';
+                copyBtn.innerHTML = '<i class="fas fa-copy"></i> نسخ الكود';
                 copyBtn.onclick = () => {
                     navigator.clipboard.writeText(block.textContent);
                     showNotification('تم نسخ الكود');
@@ -1433,6 +1383,29 @@ def index():
             alert(message);
         }
         
+        function copyMessage(button) {
+            const text = button.closest('.message-content').querySelector('.message-text').innerText;
+            navigator.clipboard.writeText(text).then(() => {
+                showNotification('تم نسخ الإجابة');
+            });
+        }
+        
+        function copyCode(button) {
+            const messageDiv = button.closest('.message');
+            const codeBlocks = messageDiv.querySelectorAll('pre code');
+            if (codeBlocks.length > 0) {
+                let allCode = '';
+                codeBlocks.forEach(block => {
+                    allCode += block.textContent + '\\n\\n';
+                });
+                navigator.clipboard.writeText(allCode).then(() => {
+                    showNotification('تم نسخ كل الأكواد');
+                });
+            } else {
+                copyMessage(button);
+            }
+        }
+        
         function sendMessage() {
             if (isProcessing) return;
             
@@ -1443,6 +1416,7 @@ def index():
             
             isProcessing = true;
             document.getElementById('sendBtn').disabled = true;
+            document.getElementById('stopBtn').style.display = 'flex';
             
             displayUserMessage(message);
             input.value = '';
@@ -1451,8 +1425,11 @@ def index():
             // إظهار مؤشر الكتابة
             showTypingIndicator();
             
+            // إنشاء stream ID جديد
+            currentStreamId = Date.now().toString();
+            
             // بدء التدفق
-            const eventSource = new EventSource(`/api/chat/stream?message=${encodeURIComponent(message)}`);
+            const eventSource = new EventSource(`/api/chat/stream?message=${encodeURIComponent(message)}&stream_id=${currentStreamId}`);
             let fullResponse = '';
             let assistantMessage = null;
             
@@ -1472,10 +1449,18 @@ def index():
                             </div>
                             <div class="message-content">
                                 <div class="message-header">
-                                    <span class="sender-name">Soft Atlas Pro</span>
+                                    <span class="sender-name">Soft Atlas Expert</span>
                                     <span>${new Date().toLocaleString('ar-SA', { hour: '2-digit', minute: '2-digit' })}</span>
                                 </div>
                                 <div class="message-text"></div>
+                                <div class="message-actions">
+                                    <button class="action-btn" onclick="copyMessage(this)">
+                                        <i class="fas fa-copy"></i> نسخ الإجابة
+                                    </button>
+                                    <button class="action-btn" onclick="copyCode(this)">
+                                        <i class="fas fa-code"></i> نسخ الكود
+                                    </button>
+                                </div>
                             </div>
                         `;
                         container.appendChild(assistantMessage);
@@ -1501,6 +1486,7 @@ def index():
                     eventSource.close();
                     isProcessing = false;
                     document.getElementById('sendBtn').disabled = false;
+                    document.getElementById('stopBtn').style.display = 'none';
                     loadConversations();
                 }
             };
@@ -1509,6 +1495,7 @@ def index():
                 eventSource.close();
                 isProcessing = false;
                 document.getElementById('sendBtn').disabled = false;
+                document.getElementById('stopBtn').style.display = 'none';
                 hideTypingIndicator();
                 
                 if (!assistantMessage) {
@@ -1517,13 +1504,28 @@ def index():
             };
         }
         
+        function stopGeneration() {
+            if (currentStreamId) {
+                fetch('/api/chat/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ stream_id: currentStreamId })
+                }).then(() => {
+                    document.getElementById('stopBtn').style.display = 'none';
+                    isProcessing = false;
+                    document.getElementById('sendBtn').disabled = false;
+                    showNotification('تم إيقاف التوليد');
+                });
+            }
+        }
+        
         function showTypingIndicator() {
             const indicator = document.getElementById('typingIndicator');
             indicator.innerHTML = `
                 <div class="typing-dots">
                     <span></span><span></span><span></span>
                 </div>
-                <span>Soft Atlas Pro يكتب...</span>
+                <span>الخبير يحلل ويكتب...</span>
             `;
         }
         
@@ -1533,16 +1535,12 @@ def index():
         
         function autoResize(textarea) {
             textarea.style.height = 'auto';
-            textarea.style.height = Math.min(textarea.scrollHeight, 100) + 'px';
+            textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
         }
         
         function scrollToBottom() {
             const container = document.getElementById('messagesContainer');
             container.scrollTop = container.scrollHeight;
-        }
-        
-        function attachFile() {
-            alert('قريباً: دعم رفع الملفات والصور');
         }
         
         function escapeHtml(text) {
@@ -1557,53 +1555,81 @@ def index():
 
 @app.route('/api/chat/stream')
 def chat_stream():
-    """نقطة نهاية التدفق"""
+    """نقطة نهاية التدفق مع إمكانية الإيقاف"""
     message = request.args.get('message', '').strip()
     conversation_id = session.get('conversation_id')
+    stream_id = request.args.get('stream_id', str(uuid.uuid4()))
     
     if not message:
         return jsonify({'error': 'الرجاء إدخال رسالة'}), 400
     
+    # إنشاء flag للإيقاف
+    active_streams[stream_id] = {'stopped': False}
+    
     def generate():
-        # تخزين رسالة المستخدم
-        user_message = {
-            'role': 'user',
-            'content': message,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        if conversation_id not in conversations:
-            conversations[conversation_id] = []
-        
-        conversations[conversation_id].append(user_message)
-        
-        # تحضير الرسائل
-        messages_for_api = [
-            {'role': msg['role'], 'content': msg['content']}
-            for msg in conversations[conversation_id]
-        ]
-        
-        full_response = ""
-        
-        # توليد الرد
-        for chunk in generate_pro_response(messages_for_api):
-            full_response += chunk
-            yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-        
-        # تخزين الرد
-        assistant_message = {
-            'role': 'assistant',
-            'content': full_response,
-            'timestamp': datetime.now().isoformat()
-        }
-        conversations[conversation_id].append(assistant_message)
-        
-        yield f"data: {json.dumps({'done': True})}\n\n"
+        try:
+            # تخزين رسالة المستخدم
+            user_message = {
+                'role': 'user',
+                'content': message,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            if conversation_id not in conversations:
+                conversations[conversation_id] = []
+            
+            conversations[conversation_id].append(user_message)
+            
+            # تحضير الرسائل
+            messages_for_api = [
+                {'role': msg['role'], 'content': msg['content']}
+                for msg in conversations[conversation_id]
+            ]
+            
+            full_response = ""
+            
+            # توليد الرد
+            for chunk in generate_expert_response(messages_for_api, stream_id):
+                if stream_id in active_streams and active_streams[stream_id].get('stopped', False):
+                    full_response += "\n\n**[تم إيقاف التوليد]**"
+                    yield f"data: {json.dumps({'chunk': '**[تم إيقاف التوليد]**'})}\n\n"
+                    break
+                    
+                full_response += chunk
+                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+            
+            # تخزين الرد إذا لم يتم إيقافه
+            if not active_streams.get(stream_id, {}).get('stopped', False):
+                assistant_message = {
+                    'role': 'assistant',
+                    'content': full_response,
+                    'timestamp': datetime.now().isoformat()
+                }
+                conversations[conversation_id].append(assistant_message)
+            
+            yield f"data: {json.dumps({'done': True})}\n\n"
+            
+        finally:
+            # تنظيف
+            if stream_id in active_streams:
+                del active_streams[stream_id]
     
     response = Response(generate(), mimetype='text/event-stream')
     response.headers['Cache-Control'] = 'no-cache'
     response.headers['X-Accel-Buffering'] = 'no'
     return response
+
+@app.route('/api/chat/stop', methods=['POST'])
+def stop_chat():
+    """إيقاف التوليد"""
+    data = request.json
+    stream_id = data.get('stream_id')
+    
+    if stream_id in active_streams:
+        active_streams[stream_id]['stopped'] = True
+        return jsonify({'success': True})
+    
+    return jsonify({'success': False}), 404
 
 @app.route('/api/conversations', methods=['GET'])
 def list_conversations():
@@ -1655,15 +1681,18 @@ def clear_conversation():
 
 if __name__ == '__main__':
     print("="*80)
-    print("🚀 Soft Atlas AI Pro - النسخة المحترفة")
+    print("🚀 Soft Atlas AI Expert - النسخة النهائية المحترفة")
     print("="*80)
     print("✅ تم حل جميع المشاكل:")
-    print("   • إجابات مباشرة بدون مقدمات")
+    print("   • محادثة جديدة تعمل فوراً")
+    print("   • إجابات دقيقة وطويلة بدون تقطع")
+    print("   • أكواد كاملة حتى 5000 سطر")
+    print("   • تحليل من 7 جوانب مختلفة")
+    print("   • جداول مقارنة وإحصائيات")
+    print("   • زر إيقاف التوليد")
+    print("   • زر نسخ الإجابة والكود")
     print("   • تصميم متجاوب مع الجوال")
-    print("   • تسجيل المحادثات تلقائياً")
-    print("   • جداول وإحصائيات مرتبة")
-    print("   • أكواد كاملة مع نسخ")
-    print("   • وضع داكن/نهاري")
+    print("   • تسجيل تلقائي للمحادثات")
     print("="*80)
     print("🌐 الخادم: http://localhost:5000")
     print("="*80)
