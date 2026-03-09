@@ -129,7 +129,7 @@ def index():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Soft Atlas AI Pro - الخبير المحترف</title>
+    <title>Abdo AI Pro - الخبير المحترف</title>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
@@ -1098,7 +1098,7 @@ def index():
                     <div class="logo-icon">
                         <i class="fas fa-brain"></i>
                     </div>
-                    <span class="logo-text">Soft Atlas Pro</span>
+                    <span class="logo-text">Abdo Ai Pro</span>
                     <span class="logo-badge">خبير</span>
                 </div>
             </div>
