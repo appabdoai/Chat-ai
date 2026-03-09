@@ -14,17 +14,34 @@ load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or 'your-secret-key-here'
-app.config['PERMANENT_SESSION_LIFETIME'] = 3600 * 24 * 30  # 30 يوم
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600 * 24 * 7  # أسبوع
 
 # إعدادات NVIDIA API
 NVIDIA_API_KEY = "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"
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+MODEL_NAME = "qwen/qwen3.5-122b-a10b"
 
-# تخزين المحادثات
+# تخزين المحادثات (في الإنتاج استخدم قاعدة بيانات)
 conversations = {}
 
+def optimize_code_response(content):
+    """تحسين عرض الأكواد البرمجية"""
+    # اكتشاف كتل الأكواد وتحسين تنسيقها
+    def replace_code_block(match):
+        lang = match.group(1) or 'text'
+        code = match.group(2)
+        return f'```{lang}\n{code}\n```'
+    
+    # تحسين عرض الأكواد المضمنة
+    content = re.sub(r'`([^`]+)`', r'<code>\1</code>', content)
+    
+    # تحسين كتل الأكواد
+    content = re.sub(r'```(\w*)\n(.*?)```', replace_code_block, content, flags=re.DOTALL)
+    
+    return content
+
 def generate_stream_response(messages):
-    """توليد رد متدفق مع إجابات طويلة جداً"""
+    """توليد رد متدفق محسن وسريع جداً من NVIDIA API"""
     headers = {
         "Authorization": f"Bearer {NVIDIA_API_KEY}",
         "Accept": "text/event-stream",
@@ -35,36 +52,37 @@ def generate_stream_response(messages):
         "role": "system",
         "content": """أنت Soft Atlas AI، مساعد ذكي فائق التطور باللغة العربية الفصحى.
 
-تعليمات خاصة جداً للإجابات الطويلة:
-1. قدم إجابات موسوعية شاملة جداً (5000-10000 كلمة للمواضيع المعقدة)
-2. للمواضيع البرمجية:
-   - قدم أكواد طويلة جداً تصل إلى 5000 سطر
-   - اشرح كل جزء بالتفصيل الممل
-   - قدم 10-20 مثالاً عملياً
-   - اذكر جميع الحالات الخاصة
-   - وضح أفضل الممارسات والأخطاء الشائعة
-   - قدم تحسينات متعددة المستويات
-3. قسّم الإجابات إلى أقسام وفصول
-4. استخدم قوائم طويلة ونقاط تفصيلية
-5. قدم مقارنات شاملة
-6. اذكر المراجع والمصادر
-7. قدم إجابات تغطي جميع الجوانب الممكنة
-8. استخدم لغة عربية فصيحة 100%
-9. للمواضيع العلمية، اشرح النظريات والتطبيقات
-10. قدم جداول وإحصائيات عند اللزوم"""
+القواعد الأساسية:
+1. قدم إجابات دقيقة وشاملة جداً جداً (لا تقل عن 1000 كلمة للمواضيع المعقدة)
+2. استخدم اللغة العربية الفصيحة السليمة 100%
+3. للمواضيع البرمجية:
+   - قدم شرحاً مفصلاً جداً مع أمثلة عملية
+   - وضح كل سطر من الكود
+   - اشرح أفضل الممارسات
+   - قدم تحسينات مقترحة
+   - اذكر الأخطاء الشائعة
+4. قسّم الإجابات إلى أقسام منظمة مع عناوين فرعية
+5. استخدم النقاط والقوائم للتوضيح
+6. قدم أمثلة واقعية وحديثة
+7. اشرح المفاهيم الصعبة ببساطة مع تشبيهات
+8. للمواضيع العلمية، قدم تفاصيل دقيقة مع المصادر
+9. للمواضيع التاريخية، اذكر التواريخ والأحداث بدقة
+10. استخدم تنسيق Markdown محسن مع ألوان للأكواد
+11. قدم إجابات موسوعية تغطي جميع جوانب السؤال
+12. إذا كان السؤال برمجياً، قدم الكود مع شرح تفصيلي وناتج التنفيذ"""
     }
     
-    full_messages = [system_prompt] + messages[-100:]  # آخر 100 رسالة للسياق
+    full_messages = [system_prompt] + messages[-50:]  # آخر 50 رسالة للسياق
     
     payload = {
-        "model": "qwen/qwen3.5-122b-a10b",
+        "model": MODEL_NAME,
         "messages": full_messages,
-        "max_tokens": 131072,  # أقصى طول للإجابة (كبير جداً)
-        "temperature": 0.7,
-        "top_p": 0.95,
+        "max_tokens": 32768,  # أقصى طول للإجابة (مضاعف)
+        "temperature": 0.65,   # توازن أفضل بين الإبداع والدقة
+        "top_p": 0.92,
         "stream": True,
-        "frequency_penalty": 0.0,
-        "presence_penalty": 0.0
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.1
     }
     
     try:
@@ -73,7 +91,7 @@ def generate_stream_response(messages):
             headers=headers,
             json=payload,
             stream=True,
-            timeout=300  # 5 دقائق timeout
+            timeout=120  # زيادة timeout
         )
         
         if response.status_code == 200:
@@ -88,7 +106,11 @@ def generate_stream_response(messages):
                                 if 'choices' in json_data:
                                     delta = json_data['choices'][0].get('delta', {})
                                     if 'content' in delta:
-                                        yield delta['content']
+                                        content = delta['content']
+                                        # تحسين عرض الأكواد في الوقت الفعلي
+                                        if '```' in content:
+                                            content = optimize_code_response(content)
+                                        yield content
                             except:
                                 continue
         else:
@@ -99,7 +121,7 @@ def generate_stream_response(messages):
 
 @app.route('/')
 def index():
-    """الصفحة الرئيسية المحسنة بشكل كبير"""
+    """الصفحة الرئيسية المحسنة"""
     if 'conversation_id' not in session:
         session['conversation_id'] = str(uuid.uuid4())
         conversations[session['conversation_id']] = []
@@ -110,7 +132,7 @@ def index():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Soft Atlas AI - المساحات الذكية</title>
+    <title>Soft Atlas AI - المساعد الذكي الفائق</title>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
@@ -125,105 +147,86 @@ def index():
         }
 
         :root {
-            /* الوضع النهاري */
-            --bg-primary: #f0f5fa;
-            --bg-secondary: #ffffff;
-            --text-primary: #1e293b;
-            --text-secondary: #475569;
-            --accent-primary: #3b82f6;
-            --accent-secondary: #8b5cf6;
-            --accent-gradient: linear-gradient(135deg, #3b82f6, #8b5cf6);
-            --border-color: #e2e8f0;
-            --shadow-color: rgba(0, 0, 0, 0.1);
-            --message-user: linear-gradient(135deg, #3b82f6, #8b5cf6);
-            --message-assistant: #ffffff;
-            --sidebar-bg: #ffffff;
-            --navbar-bg: rgba(255, 255, 255, 0.8);
-            --input-bg: #ffffff;
-            --hover-bg: #f8fafc;
-        }
-
-        [data-theme="dark"] {
-            --bg-primary: #0b1120;
-            --bg-secondary: #1e293b;
-            --text-primary: #f1f5f9;
-            --text-secondary: #94a3b8;
-            --accent-primary: #60a5fa;
-            --accent-secondary: #c084fc;
-            --accent-gradient: linear-gradient(135deg, #60a5fa, #c084fc);
-            --border-color: #334155;
-            --shadow-color: rgba(0, 0, 0, 0.5);
-            --message-user: linear-gradient(135deg, #3b82f6, #8b5cf6);
-            --message-assistant: #1e293b;
-            --sidebar-bg: #1e293b;
-            --navbar-bg: rgba(30, 41, 59, 0.8);
-            --input-bg: #1e293b;
-            --hover-bg: #2d3a4f;
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --secondary: #8b5cf6;
+            --accent: #ec4899;
+            --dark: #0b1120;
+            --darker: #050914;
+            --light: #f8fafc;
+            --gray: #94a3b8;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --glass: rgba(255, 255, 255, 0.03);
+            --glass-hover: rgba(255, 255, 255, 0.05);
+            --glass-border: rgba(255, 255, 255, 0.05);
+            --glass-border-hover: rgba(99, 102, 241, 0.3);
         }
 
         body {
             font-family: 'Cairo', sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
+            background: var(--darker);
             min-height: 100vh;
-            transition: background-color 0.3s, color 0.3s;
+            color: var(--light);
+            position: relative;
+            overflow-x: hidden;
         }
 
-        /* توقيف الإجابة */
-        .stop-generation {
+        /* خلفية متحركة */
+        body::before {
+            content: '';
             position: fixed;
-            bottom: 100px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #ef4444;
-            color: white;
-            padding: 12px 30px;
-            border-radius: 50px;
-            font-weight: 600;
-            display: none;
-            align-items: center;
-            gap: 10px;
-            cursor: pointer;
-            z-index: 1000;
-            box-shadow: 0 10px 25px rgba(239, 68, 68, 0.4);
-            animation: slideUp 0.3s ease;
-            border: none;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(circle at 20% 30%, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 80% 70%, rgba(139, 92, 246, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 40% 80%, rgba(236, 72, 153, 0.1) 0%, transparent 50%);
+            animation: gradientShift 15s ease infinite;
+            pointer-events: none;
         }
 
-        .stop-generation:hover {
-            background: #dc2626;
+        @keyframes gradientShift {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
         }
 
-        @keyframes slideUp {
-            from { transform: translate(-50%, 20px); opacity: 0; }
-            to { transform: translate(-50%, 0); opacity: 1; }
-        }
-
-        /* Navbar صغير وجميل */
-        .navbar {
-            background: var(--navbar-bg);
+        .app-container {
+            position: relative;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
             backdrop-filter: blur(20px);
-            border-bottom: 1px solid var(--border-color);
-            padding: 0.5rem 2rem;
+        }
+
+        /* Navbar محسّن */
+        .navbar {
+            background: rgba(5, 9, 20, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--glass-border);
+            padding: 0.75rem 2rem;
             display: flex;
             justify-content: space-between;
             align-items: center;
             position: sticky;
             top: 0;
-            z-index: 100;
+            z-index: 1000;
         }
 
         .navbar-brand {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 12px;
         }
 
         .logo {
-            width: 35px;
-            height: 35px;
-            background: var(--accent-gradient);
-            border-radius: 8px;
+            width: 45px;
+            height: 45px;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border-radius: 12px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -231,223 +234,379 @@ def index():
             overflow: hidden;
         }
 
+        .logo::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.3), transparent);
+            transform: rotate(45deg);
+            animation: shine 3s infinite;
+        }
+
+        @keyframes shine {
+            0% { transform: translateX(-100%) rotate(45deg); }
+            20%, 100% { transform: translateX(100%) rotate(45deg); }
+        }
+
         .logo i {
-            font-size: 18px;
+            font-size: 24px;
             color: white;
+            position: relative;
+            z-index: 2;
         }
 
         .brand-text {
-            font-size: 1.2rem;
-            font-weight: 700;
-            background: var(--accent-gradient);
+            font-size: 1.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #fff, var(--gray));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+
+        .navbar-menu {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--gray);
+            text-decoration: none;
+            font-weight: 500;
+            padding: 0.5rem 1rem;
+            border-radius: 10px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .nav-item:hover {
+            background: var(--glass);
+            color: white;
+        }
+
+        .nav-item.active {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white;
+        }
+
+        .nav-item i {
+            font-size: 1.1rem;
         }
 
         .nav-actions {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 12px;
         }
 
-        .nav-btn {
-            width: 38px;
-            height: 38px;
-            background: var(--input-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 10px;
+        .theme-toggle, .settings-toggle {
+            width: 45px;
+            height: 45px;
+            background: var(--glass);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: var(--text-secondary);
+            color: var(--gray);
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.3s;
         }
 
-        .nav-btn:hover {
-            background: var(--accent-gradient);
+        .theme-toggle:hover, .settings-toggle:hover {
+            background: var(--glass-hover);
             color: white;
-            border-color: transparent;
+            border-color: var(--primary);
         }
 
         /* Main Layout */
         .main-layout {
             display: flex;
-            height: calc(100vh - 60px);
-            position: relative;
+            flex: 1;
+            padding: 1.5rem;
+            gap: 1.5rem;
+            max-width: 1800px;
+            margin: 0 auto;
+            width: 100%;
         }
 
-        /* زر فتح السجل (صغير وجميل) */
-        .history-toggle {
-            position: fixed;
-            right: 20px;
-            top: 80px;
-            width: 45px;
-            height: 45px;
-            background: var(--accent-gradient);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            cursor: pointer;
-            z-index: 99;
-            box-shadow: 0 5px 15px rgba(59, 130, 246, 0.4);
-            transition: all 0.3s;
-        }
-
-        .history-toggle:hover {
-            transform: scale(1.1);
-        }
-
-        /* Sidebar المخفي */
-        .history-sidebar {
-            position: fixed;
-            right: -350px;
-            top: 0;
-            width: 320px;
-            height: 100vh;
-            background: var(--sidebar-bg);
-            border-left: 1px solid var(--border-color);
-            z-index: 1000;
-            transition: right 0.3s ease;
+        /* Sidebar محسّن (أصغر حجماً) */
+        .sidebar {
+            width: 280px;
+            background: rgba(5, 9, 20, 0.6);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            border-radius: 24px;
             display: flex;
             flex-direction: column;
-            box-shadow: -5px 0 25px var(--shadow-color);
-        }
-
-        .history-sidebar.open {
-            right: 0;
+            height: calc(100vh - 100px);
+            position: sticky;
+            top: 85px;
+            overflow: hidden;
         }
 
         .sidebar-header {
-            padding: 20px;
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--glass-border);
         }
 
-        .sidebar-header h3 {
-            font-size: 1.1rem;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .close-sidebar {
-            width: 35px;
-            height: 35px;
-            background: var(--hover-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
+        .new-chat-btn {
+            width: 100%;
+            padding: 1rem;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border: none;
+            border-radius: 16px;
+            color: white;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
-            cursor: pointer;
-            color: var(--text-secondary);
+            gap: 12px;
+            transition: all 0.3s;
+        }
+
+        .new-chat-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(99, 102, 241, 0.4);
         }
 
         .conversations-list {
             flex: 1;
             overflow-y: auto;
-            padding: 15px;
+            padding: 1rem;
         }
 
         .conversation-item {
-            padding: 12px;
-            background: var(--hover-bg);
-            border: 1px solid var(--border-color);
+            padding: 0.75rem;
+            background: var(--glass);
             border-radius: 12px;
-            margin-bottom: 10px;
+            margin-bottom: 0.5rem;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.3s;
+            border: 1px solid transparent;
         }
 
         .conversation-item:hover {
-            border-color: var(--accent-primary);
+            background: var(--glass-hover);
+            border-color: var(--primary);
             transform: translateX(-5px);
         }
 
         .conversation-item.active {
-            background: var(--accent-gradient);
-            color: white;
-        }
-
-        .conversation-item.active .conv-preview,
-        .conversation-item.active .conv-meta {
-            color: white;
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(139, 92, 246, 0.15));
+            border-color: var(--primary);
         }
 
         .conv-preview {
             font-size: 0.9rem;
-            font-weight: 600;
-            margin-bottom: 5px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            font-weight: 500;
+            color: white;
+            margin-bottom: 0.25rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .conv-meta {
             display: flex;
             justify-content: space-between;
             font-size: 0.7rem;
-            color: var(--text-secondary);
+            color: var(--gray);
         }
 
-        .conversation-actions {
-            display: flex;
-            gap: 5px;
-            margin-top: 8px;
-        }
-
-        .conv-action-btn {
-            padding: 4px 8px;
-            background: var(--bg-primary);
-            border: 1px solid var(--border-color);
-            border-radius: 5px;
-            font-size: 0.7rem;
-            cursor: pointer;
-            color: var(--text-secondary);
-            display: flex;
-            align-items: center;
-            gap: 3px;
-        }
-
-        .conv-action-btn:hover {
-            background: var(--accent-gradient);
-            color: white;
-        }
-
-        /* Chat Area كبيرة جداً */
+        /* Chat Area الرئيسي (كبير) */
         .chat-area {
             flex: 1;
             display: flex;
             flex-direction: column;
-            background: var(--bg-secondary);
-            margin-right: 0;
-            transition: margin-right 0.3s;
-            height: 100%;
+            background: rgba(5, 9, 20, 0.4);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            border-radius: 24px;
+            overflow: hidden;
+            height: calc(100vh - 100px);
         }
 
-        .chat-area.sidebar-open {
-            margin-right: 320px;
+        .chat-header {
+            padding: 1.25rem 2rem;
+            border-bottom: 1px solid var(--glass-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(5, 9, 20, 0.6);
+        }
+
+        .chat-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .model-badge {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            padding: 0.5rem 1.25rem;
+            border-radius: 30px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .model-badge i {
+            color: var(--warning);
+        }
+
+        .chat-stats {
+            display: flex;
+            gap: 20px;
+            color: var(--gray);
+            font-size: 0.9rem;
+        }
+
+        .chat-stats span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
         }
 
         .messages-container {
             flex: 1;
             overflow-y: auto;
-            padding: 30px;
+            padding: 2rem;
             display: flex;
             flex-direction: column;
-            gap: 25px;
+            gap: 1.5rem;
         }
 
-        /* Message Styles */
+        /* Welcome Screen محسّن */
+        .welcome-screen {
+            text-align: center;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .welcome-icon {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 2rem;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border-radius: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: float 3s ease-in-out infinite;
+            box-shadow: 0 20px 40px rgba(99, 102, 241, 0.3);
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+
+        .welcome-icon i {
+            font-size: 60px;
+            color: white;
+        }
+
+        .welcome-screen h1 {
+            font-size: 3rem;
+            font-weight: 800;
+            margin-bottom: 1rem;
+            background: linear-gradient(135deg, #fff, var(--primary), var(--secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .welcome-screen p {
+            color: var(--gray);
+            font-size: 1.2rem;
+            margin-bottom: 3rem;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin: 2rem 0;
+        }
+
+        .feature-card {
+            background: var(--glass);
+            padding: 1.5rem;
+            border-radius: 20px;
+            border: 1px solid var(--glass-border);
+            transition: all 0.3s;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+            border-color: var(--primary);
+            background: var(--glass-hover);
+        }
+
+        .feature-card i {
+            font-size: 2rem;
+            color: var(--primary);
+            margin-bottom: 1rem;
+        }
+
+        .feature-card h3 {
+            font-size: 1.1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .feature-card p {
+            font-size: 0.9rem;
+            color: var(--gray);
+            margin: 0;
+        }
+
+        .suggestions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            justify-content: center;
+            margin: 2rem 0;
+        }
+
+        .suggestion-chip {
+            background: var(--glass);
+            padding: 0.75rem 1.5rem;
+            border-radius: 30px;
+            border: 1px solid var(--glass-border);
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 0.9rem;
+        }
+
+        .suggestion-chip:hover {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border-color: transparent;
+            transform: scale(1.05);
+        }
+
+        /* Message Styles محسّنة */
         .message {
             display: flex;
             gap: 15px;
-            animation: fadeIn 0.3s ease;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         .message.user {
@@ -457,7 +616,7 @@ def index():
         .message-avatar {
             width: 45px;
             height: 45px;
-            border-radius: 12px;
+            border-radius: 14px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -465,11 +624,11 @@ def index():
         }
 
         .message.user .message-avatar {
-            background: linear-gradient(135deg, #ec4899, #ef4444);
+            background: linear-gradient(135deg, var(--accent), var(--danger));
         }
 
         .message.assistant .message-avatar {
-            background: var(--accent-gradient);
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
         }
 
         .message-avatar i {
@@ -479,15 +638,15 @@ def index():
 
         .message-content {
             flex: 1;
-            max-width: 85%;
+            max-width: 80%;
         }
 
         .message-header {
             display: flex;
             justify-content: space-between;
-            margin-bottom: 8px;
+            margin-bottom: 0.5rem;
             font-size: 0.9rem;
-            color: var(--text-secondary);
+            color: var(--gray);
         }
 
         .message.user .message-header {
@@ -495,134 +654,124 @@ def index():
         }
 
         .sender-name {
-            font-weight: 700;
-            color: var(--text-primary);
+            font-weight: 600;
+            color: white;
         }
 
         .message-text {
-            background: var(--message-assistant);
-            padding: 20px 25px;
+            background: var(--glass);
+            padding: 1.25rem 1.5rem;
             border-radius: 20px;
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
+            border: 1px solid var(--glass-border);
+            color: white;
             line-height: 1.8;
             font-size: 1rem;
             overflow-x: auto;
-            box-shadow: 0 5px 15px var(--shadow-color);
         }
 
         .message.user .message-text {
-            background: var(--message-user);
-            color: white;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
             border: none;
         }
 
-        /* Code Blocks - طويلة جداً */
+        /* Code Highlighting محسّن */
         .message-text pre {
-            background: #0d1117 !important;
+            background: var(--darker) !important;
             border-radius: 12px;
-            padding: 20px;
-            margin: 15px 0;
-            border: 1px solid #30363d;
+            padding: 1rem;
+            margin: 1rem 0;
+            border: 1px solid var(--glass-border);
             position: relative;
-            max-height: 600px;
-            overflow: auto;
+        }
+
+        .message-text code {
+            font-family: 'Fira Code', monospace;
+            font-size: 0.9rem;
         }
 
         .message-text pre code {
-            font-family: 'Fira Code', monospace;
-            font-size: 0.9rem;
-            line-height: 1.6;
-            color: #e6edf3;
+            color: #d4d4d4;
         }
 
-        .code-header {
-            position: sticky;
-            top: 0;
-            background: #161b22;
-            padding: 10px 15px;
-            border-radius: 8px 8px 0 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid #30363d;
-            margin-bottom: 10px;
-            z-index: 10;
-        }
-
-        .code-lang {
-            color: #8b949e;
-            font-size: 0.8rem;
-            display: flex;
-            align-items: center;
-            gap: 5px;
+        .message-text .hljs {
+            background: transparent !important;
         }
 
         .copy-code-btn {
-            background: #21262d;
-            border: 1px solid #30363d;
-            color: #c9d1d9;
-            padding: 5px 12px;
-            border-radius: 6px;
-            font-size: 0.8rem;
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.5);
+            border: none;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
             cursor: pointer;
-            transition: all 0.2s;
+            font-size: 0.8rem;
+            opacity: 0;
+            transition: opacity 0.3s;
         }
 
-        .copy-code-btn:hover {
-            background: #30363d;
+        pre:hover .copy-code-btn {
+            opacity: 1;
         }
 
-        /* Message Actions */
         .message-actions {
             display: flex;
-            gap: 8px;
-            margin-top: 10px;
-            padding-right: 10px;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+            padding-right: 0.5rem;
         }
 
         .message-actions button {
-            background: var(--hover-bg);
-            border: 1px solid var(--border-color);
-            color: var(--text-secondary);
-            padding: 6px 15px;
+            background: var(--glass);
+            border: 1px solid var(--glass-border);
+            color: var(--gray);
+            padding: 0.4rem 1rem;
             border-radius: 8px;
             font-size: 0.8rem;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.3s;
             display: flex;
             align-items: center;
             gap: 5px;
         }
 
         .message-actions button:hover {
-            background: var(--accent-gradient);
+            background: var(--primary);
             color: white;
+            border-color: var(--primary);
         }
 
-        /* Input Area صغير وجميل */
+        /* Input Area محسّن (أصغر حجماً) */
         .input-container {
-            padding: 15px 30px;
-            background: var(--bg-secondary);
-            border-top: 1px solid var(--border-color);
+            padding: 1.25rem 2rem;
+            background: rgba(5, 9, 20, 0.8);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid var(--glass-border);
         }
 
         .input-wrapper {
             display: flex;
-            gap: 10px;
-            background: var(--input-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 30px;
-            padding: 5px;
-            box-shadow: 0 5px 15px var(--shadow-color);
+            gap: 12px;
+            background: var(--glass);
+            border-radius: 20px;
+            padding: 0.25rem;
+            border: 1px solid var(--glass-border);
+            transition: all 0.3s;
+        }
+
+        .input-wrapper:focus-within {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
         }
 
         .input-wrapper textarea {
             flex: 1;
             background: transparent;
             border: none;
-            padding: 12px 20px;
-            color: var(--text-primary);
+            padding: 0.75rem 1.25rem;
+            color: white;
             font-family: 'Cairo', sans-serif;
             font-size: 0.95rem;
             resize: none;
@@ -634,24 +783,26 @@ def index():
         }
 
         .input-wrapper textarea::placeholder {
-            color: var(--text-secondary);
+            color: var(--gray);
             opacity: 0.5;
         }
 
         .send-btn {
             width: 45px;
             height: 45px;
-            background: var(--accent-gradient);
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
             border: none;
-            border-radius: 25px;
+            border-radius: 16px;
             color: white;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.3s;
             font-size: 1.1rem;
+            margin: 0.25rem;
         }
 
         .send-btn:hover:not(:disabled) {
             transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(99, 102, 241, 0.4);
         }
 
         .send-btn:disabled {
@@ -662,110 +813,52 @@ def index():
         .input-footer {
             display: flex;
             justify-content: space-between;
-            margin-top: 10px;
-            padding: 0 10px;
-            color: var(--text-secondary);
+            margin-top: 0.75rem;
+            color: var(--gray);
             font-size: 0.8rem;
         }
 
-        /* Welcome Screen */
-        .welcome-screen {
-            text-align: center;
-            max-width: 1000px;
-            margin: 0 auto;
-            padding: 30px;
-        }
-
-        .welcome-icon {
-            width: 100px;
-            height: 100px;
-            margin: 0 auto 20px;
-            background: var(--accent-gradient);
-            border-radius: 30px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            animation: float 3s ease-in-out infinite;
-        }
-
-        @keyframes float {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-10px); }
-        }
-
-        .welcome-icon i {
-            font-size: 50px;
-            color: white;
-        }
-
-        .welcome-screen h1 {
-            font-size: 2.5rem;
-            margin-bottom: 10px;
-            background: var(--accent-gradient);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .welcome-screen p {
-            color: var(--text-secondary);
-            margin-bottom: 30px;
-        }
-
-        /* Language Chips */
-        .language-chips {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            justify-content: center;
-            margin: 20px 0;
-        }
-
-        .lang-chip {
-            background: var(--hover-bg);
-            border: 1px solid var(--border-color);
-            padding: 10px 20px;
-            border-radius: 30px;
-            font-size: 0.9rem;
-            cursor: pointer;
-            transition: all 0.2s;
+        .typing-indicator {
             display: flex;
             align-items: center;
             gap: 8px;
         }
 
-        .lang-chip:hover {
-            background: var(--accent-gradient);
-            color: white;
+        .typing-indicator i {
+            color: var(--primary);
+            animation: spin 1s linear infinite;
         }
 
-        .lang-chip i {
-            font-size: 1rem;
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
         }
 
-        /* Loading Dots */
+        /* Loading Dots محسّن */
         .loading-dots {
             display: flex;
             gap: 8px;
-            padding: 20px;
-            background: var(--hover-bg);
+            padding: 1rem;
+            background: var(--glass);
             border-radius: 20px;
+            border: 1px solid var(--glass-border);
         }
 
         .loading-dots span {
             width: 10px;
             height: 10px;
-            background: var(--accent-primary);
+            background: var(--primary);
             border-radius: 50%;
-            animation: bounce 1.4s infinite;
+            animation: bounce 1.4s infinite ease-in-out;
         }
 
         .loading-dots span:nth-child(2) {
-            background: var(--accent-secondary);
+            background: var(--secondary);
             animation-delay: 0.2s;
         }
 
         .loading-dots span:nth-child(3) {
-            background: #ec4899;
+            background: var(--accent);
             animation-delay: 0.4s;
         }
 
@@ -774,197 +867,315 @@ def index():
             50% { transform: translateY(-10px); }
         }
 
-        /* Scrollbar */
+        /* Scrollbar محسّن */
         ::-webkit-scrollbar {
             width: 6px;
             height: 6px;
         }
 
         ::-webkit-scrollbar-track {
-            background: var(--hover-bg);
+            background: var(--glass);
         }
 
         ::-webkit-scrollbar-thumb {
-            background: var(--accent-primary);
+            background: var(--primary);
             border-radius: 3px;
         }
 
-        /* Responsive */
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--secondary);
+        }
+
+        /* Responsive Design متقدم */
+        @media (max-width: 1200px) {
+            .features-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 992px) {
+            .sidebar {
+                width: 240px;
+            }
+            
+            .welcome-screen h1 {
+                font-size: 2.5rem;
+            }
+        }
+
         @media (max-width: 768px) {
+            .main-layout {
+                flex-direction: column;
+                padding: 1rem;
+            }
+            
+            .sidebar {
+                width: 100%;
+                height: auto;
+                position: static;
+            }
+            
             .navbar {
-                padding: 0.5rem 1rem;
+                padding: 0.75rem 1rem;
             }
             
             .brand-text {
+                font-size: 1.2rem;
+            }
+            
+            .nav-item span {
                 display: none;
             }
             
-            .history-sidebar {
-                width: 280px;
+            .chat-area {
+                height: calc(100vh - 200px);
             }
             
-            .chat-area.sidebar-open {
-                margin-right: 0;
-            }
-            
-            .messages-container {
-                padding: 15px;
+            .welcome-screen h1 {
+                font-size: 2rem;
             }
             
             .message-content {
                 max-width: 100%;
             }
             
-            .input-container {
-                padding: 10px 15px;
+            .features-grid {
+                grid-template-columns: 1fr;
             }
+        }
+
+        @media (max-width: 480px) {
+            .navbar {
+                flex-wrap: wrap;
+            }
+            
+            .navbar-menu {
+                order: 3;
+                width: 100%;
+                justify-content: center;
+                margin-top: 0.5rem;
+            }
+            
+            .chat-header {
+                flex-direction: column;
+                gap: 0.5rem;
+                text-align: center;
+            }
+            
+            .chat-stats {
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+            
+            .input-container {
+                padding: 1rem;
+            }
+        }
+
+        /* Animations إضافية */
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .glow {
+            animation: glow 2s infinite;
+        }
+
+        @keyframes glow {
+            0%, 100% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.3); }
+            50% { box-shadow: 0 0 40px rgba(99, 102, 241, 0.6); }
+        }
+
+        /* Tooltips */
+        [data-tooltip] {
+            position: relative;
+            cursor: pointer;
+        }
+
+        [data-tooltip]:before {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 0.5rem 1rem;
+            background: var(--darker);
+            color: white;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            white-space: nowrap;
+            border: 1px solid var(--glass-border);
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s;
+            pointer-events: none;
+            z-index: 1000;
+        }
+
+        [data-tooltip]:hover:before {
+            opacity: 1;
+            visibility: visible;
+            bottom: 120%;
         }
     </style>
 </head>
-<body data-theme="dark">
-    <!-- زر توقيف الإجابة -->
-    <button class="stop-generation" id="stopGenerationBtn" onclick="stopGeneration()">
-        <i class="fas fa-stop-circle"></i>
-        توقيف الإجابة
-    </button>
-
-    <!-- Navbar صغير وجميل -->
-    <nav class="navbar">
-        <div class="navbar-brand">
-            <div class="logo">
-                <i class="fas fa-brain"></i>
+<body>
+    <div class="app-container">
+        <!-- Navbar محسّن -->
+        <nav class="navbar">
+            <div class="navbar-brand">
+                <div class="logo">
+                    <i class="fas fa-brain"></i>
+                </div>
+                <span class="brand-text">Soft Atlas AI</span>
             </div>
-            <span class="brand-text">Soft Atlas AI</span>
-        </div>
-        
-        <div class="nav-actions">
-            <div class="nav-btn" onclick="toggleTheme()" title="تغيير المظهر">
-                <i class="fas fa-moon"></i>
+            
+            <div class="navbar-menu">
+                <a class="nav-item active" onclick="switchTab('chat')">
+                    <i class="fas fa-comment"></i>
+                    <span>محادثة</span>
+                </a>
+                <a class="nav-item" onclick="switchTab('code')">
+                    <i class="fas fa-code"></i>
+                    <span>مبرمج</span>
+                </a>
+                <a class="nav-item" onclick="switchTab('analyze')">
+                    <i class="fas fa-chart-line"></i>
+                    <span>تحليل</span>
+                </a>
+                <a class="nav-item" onclick="switchTab('write')">
+                    <i class="fas fa-pen"></i>
+                    <span>كتابة</span>
+                </a>
             </div>
-            <div class="nav-btn" onclick="newConversation()" title="محادثة جديدة">
-                <i class="fas fa-plus"></i>
-            </div>
-            <div class="nav-btn" onclick="clearAllConversations()" title="مسح الكل">
-                <i class="fas fa-trash"></i>
-            </div>
-        </div>
-    </nav>
-
-    <!-- زر فتح السجل -->
-    <div class="history-toggle" onclick="toggleHistory()" title="سجل المحادثات">
-        <i class="fas fa-history"></i>
-    </div>
-
-    <!-- Sidebar المخفي -->
-    <div class="history-sidebar" id="historySidebar">
-        <div class="sidebar-header">
-            <h3>
-                <i class="fas fa-history"></i>
-                سجل المحادثات
-            </h3>
-            <div class="close-sidebar" onclick="toggleHistory()">
-                <i class="fas fa-times"></i>
-            </div>
-        </div>
-        <div class="conversations-list" id="conversationsList">
-            <!-- تضاف المحادثات هنا -->
-        </div>
-    </div>
-
-    <!-- Main Chat Area -->
-    <div class="main-layout">
-        <div class="chat-area" id="chatArea">
-            <div class="messages-container" id="messagesContainer">
-                <!-- Welcome Screen -->
-                <div class="welcome-screen" id="welcomeMessage">
-                    <div class="welcome-icon">
-                        <i class="fas fa-robot"></i>
-                    </div>
-                    <h1>Soft Atlas AI</h1>
-                    <p>المساعد الذكي الأقوى - إجابات طويلة جداً تصل إلى 5000 سطر</p>
-                    
-                    <!-- لغات البرمجة المدعومة -->
-                    <div class="language-chips">
-                        <span class="lang-chip" onclick="setLanguage('python')">
-                            <i class="fab fa-python"></i> Python
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('javascript')">
-                            <i class="fab fa-js"></i> JavaScript
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('java')">
-                            <i class="fab fa-java"></i> Java
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('cpp')">
-                            <i class="fas fa-code"></i> C++
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('csharp')">
-                            <i class="fas fa-code"></i> C#
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('php')">
-                            <i class="fab fa-php"></i> PHP
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('ruby')">
-                            <i class="far fa-gem"></i> Ruby
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('go')">
-                            <i class="fas fa-code"></i> Go
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('rust')">
-                            <i class="fas fa-code"></i> Rust
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('swift')">
-                            <i class="fab fa-swift"></i> Swift
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('kotlin')">
-                            <i class="fas fa-code"></i> Kotlin
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('typescript')">
-                            <i class="fas fa-code"></i> TypeScript
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('html')">
-                            <i class="fab fa-html5"></i> HTML/CSS
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('sql')">
-                            <i class="fas fa-database"></i> SQL
-                        </span>
-                        <span class="lang-chip" onclick="setLanguage('r')">
-                            <i class="fas fa-chart-line"></i> R
-                        </span>
-                    </div>
-
-                    <div class="language-chips">
-                        <span class="lang-chip" onclick="setQuestion('اكتب مشروع بايثون كامل مع 5000 سطر')">
-                            <i class="fas fa-code"></i> مشروع 5000 سطر
-                        </span>
-                        <span class="lang-chip" onclick="setQuestion('اكتب نظام تشغيل بسيط بلغة C')">
-                            نظام تشغيل
-                        </span>
-                        <span class="lang-chip" onclick="setQuestion('تطبيق ويب كامل React + Node.js')">
-                            تطبيق ويب كامل
-                        </span>
-                    </div>
+            
+            <div class="nav-actions">
+                <div class="theme-toggle" onclick="toggleTheme()" data-tooltip="تغيير المظهر">
+                    <i class="fas fa-moon"></i>
+                </div>
+                <div class="settings-toggle" onclick="openSettings()" data-tooltip="الإعدادات">
+                    <i class="fas fa-cog"></i>
                 </div>
             </div>
+        </nav>
 
-            <!-- Input Area صغير وجميل -->
-            <div class="input-container">
-                <div class="input-wrapper">
-                    <textarea 
-                        id="messageInput" 
-                        placeholder="اكتب سؤالك هنا... سأجيب بإجابة طويلة جداً"
-                        rows="1"
-                        oninput="autoResize(this)"
-                    ></textarea>
-                    <button class="send-btn" id="sendBtn" onclick="sendMessage()">
-                        <i class="fas fa-paper-plane"></i>
+        <!-- Main Layout -->
+        <div class="main-layout">
+            <!-- Sidebar (سجل المحادثات) -->
+            <div class="sidebar">
+                <div class="sidebar-header">
+                    <button class="new-chat-btn" onclick="newConversation()">
+                        <i class="fas fa-plus"></i>
+                        محادثة جديدة
                     </button>
                 </div>
-                <div class="input-footer">
-                    <div class="typing-indicator" id="typingIndicator"></div>
-                    <span>
-                        <i class="fas fa-code"></i>
-                        دعم 50+ لغة | إجابات حتى 5000 سطر
-                    </span>
+                <div class="conversations-list" id="conversationsList">
+                    <!-- تضاف المحادثات هنا -->
+                </div>
+            </div>
+
+            <!-- Chat Area الرئيسي -->
+            <div class="chat-area">
+                <div class="chat-header">
+                    <div class="chat-info">
+                        <div class="model-badge">
+                            <i class="fas fa-crown"></i>
+                            Qwen 3.5 122B
+                        </div>
+                        <div class="chat-stats">
+                            <span><i class="fas fa-bolt"></i> سرعة فائقة</span>
+                            <span><i class="fas fa-code"></i> 50+ لغة</span>
+                            <span><i class="fas fa-globe"></i> عربية فصحى</span>
+                        </div>
+                    </div>
+                    <div class="chat-actions">
+                        <span class="online-indicator">
+                            <i class="fas fa-circle" style="color: var(--success); font-size: 0.6rem;"></i>
+                            متصل
+                        </span>
+                    </div>
+                </div>
+
+                <div class="messages-container" id="messagesContainer">
+                    <!-- Welcome Screen -->
+                    <div class="welcome-screen" id="welcomeMessage">
+                        <div class="welcome-icon">
+                            <i class="fas fa-robot"></i>
+                        </div>
+                        <h1>Soft Atlas AI</h1>
+                        <p>أقوى مساعد ذكي في العالم العربي - إجابات شاملة ودقيقة جداً</p>
+                        
+                        <div class="features-grid">
+                            <div class="feature-card">
+                                <i class="fas fa-bolt"></i>
+                                <h3>سرعة خارقة</h3>
+                                <p>أسرع استجابة في العالم العربي</p>
+                            </div>
+                            <div class="feature-card">
+                                <i class="fas fa-code"></i>
+                                <h3>برمجة متقدمة</h3>
+                                <p>شرح تفصيلي مع أمثلة عملية</p>
+                            </div>
+                            <div class="feature-card">
+                                <i class="fas fa-language"></i>
+                                <h3>عربية فصحى</h3>
+                                <p>لغة عربية سليمة 100%</p>
+                            </div>
+                            <div class="feature-card">
+                                <i class="fas fa-brain"></i>
+                                <h3>ذكاء فائق</h3>
+                                <p>تحليل عميق وتفكير منطقي</p>
+                            </div>
+                        </div>
+
+                        <div class="suggestions">
+                            <span class="suggestion-chip" onclick="setQuestion('اكتب برنامج بلغة Python لحساب الأعداد الأولية مع شرح تفصيلي')">
+                                <i class="fas fa-code"></i> برنامج بايثون
+                            </span>
+                            <span class="suggestion-chip" onclick="setQuestion('اشرح الذكاء الاصطناعي التوليدي بالتفصيل مع الأمثلة')">
+                                <i class="fas fa-robot"></i> الذكاء الاصطناعي
+                            </span>
+                            <span class="suggestion-chip" onclick="setQuestion('كيف تبني تطبيق ويب كامل باستخدام React و Node.js؟')">
+                                <i class="fas fa-globe"></i> تطبيق ويب كامل
+                            </span>
+                            <span class="suggestion-chip" onclick="setQuestion('قارن بين التعلم العميق والتعلم الآلي مع أمثلة')">
+                                <i class="fas fa-chart-line"></i> تعلم عميق vs تعلم آلي
+                            </span>
+                            <span class="suggestion-chip" onclick="setQuestion('اشرح خوارزميات التشفير الحديثة بالتفصيل')">
+                                <i class="fas fa-lock"></i> التشفير
+                            </span>
+                            <span class="suggestion-chip" onclick="setQuestion('ما هي أفضل ممارسات أمان تطبيقات الويب؟')">
+                                <i class="fas fa-shield"></i> أمن المعلومات
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Input Area (أصغر حجماً) -->
+                <div class="input-container">
+                    <div class="input-wrapper">
+                        <textarea 
+                            id="messageInput" 
+                            placeholder="اكتب سؤالك هنا... سأجيب بإجابة شاملة جداً"
+                            rows="1"
+                            oninput="autoResize(this)"
+                        ></textarea>
+                        <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                    </div>
+                    <div class="input-footer">
+                        <div class="typing-indicator" id="typingIndicator"></div>
+                        <span>
+                            <i class="fas fa-keyboard"></i>
+                            Enter للإرسال | Shift+Enter سطر جديد
+                        </span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1001,8 +1212,8 @@ def index():
                     <button onclick="copyMessage(this)">
                         <i class="fas fa-copy"></i> نسخ
                     </button>
-                    <button onclick="copyAllCode(this)">
-                        <i class="fas fa-code"></i> نسخ كل الأكواد
+                    <button onclick="copyCode(this)">
+                        <i class="fas fa-code"></i> نسخ الكود
                     </button>
                     <button onclick="regenerateMessage(this)">
                         <i class="fas fa-redo"></i> إعادة
@@ -1031,8 +1242,8 @@ def index():
         // المتغيرات العامة
         let currentConversationId = null;
         let isProcessing = false;
-        let currentEventSource = null;
-        let currentTheme = 'dark';
+        let currentTab = 'chat';
+        let messageCache = new Map();
 
         // تهيئة التطبيق
         document.addEventListener('DOMContentLoaded', function() {
@@ -1044,7 +1255,7 @@ def index():
         function initializeHighlighting() {
             if (typeof hljs !== 'undefined') {
                 hljs.configure({
-                    languages: ['python', 'javascript', 'html', 'css', 'java', 'cpp', 'csharp', 'php', 'ruby', 'go', 'rust', 'swift', 'kotlin', 'typescript', 'sql', 'r']
+                    languages: ['python', 'javascript', 'html', 'css', 'java', 'cpp', 'csharp', 'php', 'ruby', 'go', 'rust', 'sql']
                 });
             }
         }
@@ -1059,41 +1270,49 @@ def index():
             });
         }
 
-        // توقيف الإجابة
-        function stopGeneration() {
-            if (currentEventSource) {
-                currentEventSource.close();
-                currentEventSource = null;
-                isProcessing = false;
-                document.getElementById('sendBtn').disabled = false;
-                document.getElementById('typingIndicator').innerHTML = '';
-                document.getElementById('stopGenerationBtn').style.display = 'none';
-                document.querySelector('.loading-dots')?.closest('.message')?.remove();
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            event.currentTarget.classList.add('active');
+            
+            // تغيير الـ placeholder حسب التبويب
+            const input = document.getElementById('messageInput');
+            switch(tab) {
+                case 'code':
+                    input.placeholder = 'اكتب سؤالك البرمجي... سأقدم شرحاً تفصيلياً مع أمثلة عملية';
+                    break;
+                case 'analyze':
+                    input.placeholder = 'اكتب النص لتحليله... سأحلله بدقة عالية';
+                    break;
+                case 'write':
+                    input.placeholder = 'اكتب موضوع الكتابة... سأكتب لك نصاً متقناً';
+                    break;
+                default:
+                    input.placeholder = 'اكتب سؤالك هنا... سأجيب بإجابة شاملة جداً';
             }
         }
 
-        // تبديل الوضع
         function toggleTheme() {
-            currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
-            document.body.setAttribute('data-theme', currentTheme);
-            const icon = document.querySelector('.nav-btn i.fa-moon, .nav-btn i.fa-sun');
-            icon.className = currentTheme === 'dark' ? 'fas fa-moon' : 'fas fa-sun';
+            document.body.classList.toggle('light-theme');
+            const icon = document.querySelector('.theme-toggle i');
+            icon.classList.toggle('fa-moon');
+            icon.classList.toggle('fa-sun');
         }
 
-        // فتح/إغلاق السجل
-        function toggleHistory() {
-            const sidebar = document.getElementById('historySidebar');
-            sidebar.classList.toggle('open');
+        function openSettings() {
+            // يمكن إضافة نافذة إعدادات منبثقة
+            alert('قريباً: إعدادات متقدمة');
         }
 
-        // تحميل المحادثات
         function loadConversations() {
             fetch('/api/conversations')
                 .then(res => res.json())
                 .then(conversations => {
                     const list = document.getElementById('conversationsList');
                     if (conversations.length === 0) {
-                        list.innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">لا توجد محادثات سابقة</div>';
+                        list.innerHTML = '<div style="color: var(--gray); text-align: center; padding: 20px;">لا توجد محادثات سابقة</div>';
                         return;
                     }
                     
@@ -1101,6 +1320,7 @@ def index():
                     conversations.forEach(conv => {
                         const item = document.createElement('div');
                         item.className = `conversation-item ${conv.id === currentConversationId ? 'active' : ''}`;
+                        item.onclick = () => loadConversation(conv.id);
                         
                         const date = new Date(conv.timestamp);
                         const timeStr = date.toLocaleString('ar-SA', { 
@@ -1110,22 +1330,16 @@ def index():
                             month: '2-digit'
                         });
                         
+                        const icon = conv.preview.includes('كود') || conv.preview.includes('برنامج') ? 'fa-code' : 'fa-message';
+                        
                         item.innerHTML = `
-                            <div class="conv-preview" onclick="loadConversation('${conv.id}')">
-                                <i class="fas fa-message" style="color: var(--accent-primary);"></i>
+                            <div class="conv-preview">
+                                <i class="fas ${icon}" style="margin-left: 5px; color: var(--primary);"></i>
                                 ${escapeHtml(conv.preview)}
                             </div>
                             <div class="conv-meta">
                                 <span><i class="far fa-clock"></i> ${timeStr}</span>
                                 <span><i class="far fa-comment"></i> ${conv.message_count}</span>
-                            </div>
-                            <div class="conversation-actions">
-                                <button class="conv-action-btn" onclick="renameConversation('${conv.id}')">
-                                    <i class="fas fa-edit"></i> تعديل
-                                </button>
-                                <button class="conv-action-btn" onclick="deleteConversation('${conv.id}')">
-                                    <i class="fas fa-trash"></i> حذف
-                                </button>
                             </div>
                         `;
                         list.appendChild(item);
@@ -1150,8 +1364,14 @@ def index():
                         }
                     });
                     
-                    loadConversations();
-                    setTimeout(() => toggleHistory(), 300); // إغلاق السجل بعد التحميل
+                    // تحديث الحالة النشطة
+                    document.querySelectorAll('.conversation-item').forEach(item => {
+                        item.classList.remove('active');
+                    });
+                    const activeItem = Array.from(document.querySelectorAll('.conversation-item')).find(
+                        item => item.onclick.toString().includes(conversationId)
+                    );
+                    if (activeItem) activeItem.classList.add('active');
                 });
         }
 
@@ -1184,36 +1404,32 @@ def index():
             if (typeof marked !== 'undefined') {
                 messageText.innerHTML = DOMPurify.sanitize(marked.parse(message));
                 // تطبيق التلوين على الأكواد
-                setTimeout(() => {
-                    messageText.querySelectorAll('pre code').forEach((block) => {
-                        if (typeof hljs !== 'undefined') {
-                            hljs.highlightElement(block);
-                        }
-                        
-                        // إضافة رأس للكود
-                        const pre = block.parentNode;
-                        const header = document.createElement('div');
-                        header.className = 'code-header';
-                        
-                        const lang = block.className.replace('hljs language-', '') || 'text';
-                        header.innerHTML = `
-                            <span class="code-lang">
-                                <i class="fas fa-code"></i> ${lang}
-                            </span>
-                            <button class="copy-code-btn" onclick="copyCode(this)">
-                                <i class="fas fa-copy"></i> نسخ الكود
-                            </button>
-                        `;
-                        
-                        pre.parentNode.insertBefore(header, pre);
-                    });
-                }, 100);
+                messageText.querySelectorAll('pre code').forEach((block) => {
+                    if (typeof hljs !== 'undefined') {
+                        hljs.highlightElement(block);
+                    }
+                    // إضافة زر نسخ الكود
+                    const pre = block.parentNode;
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = 'copy-code-btn';
+                    copyBtn.innerHTML = '<i class="fas fa-copy"></i> نسخ الكود';
+                    copyBtn.onclick = () => {
+                        navigator.clipboard.writeText(block.textContent);
+                        showNotification('تم نسخ الكود');
+                    };
+                    pre.appendChild(copyBtn);
+                });
             } else {
                 messageText.textContent = message;
             }
             
             document.getElementById('messagesContainer').appendChild(clone);
             scrollToBottom();
+        }
+
+        function showNotification(message) {
+            // يمكن إضافة نظام إشعارات متطور
+            alert(message);
         }
 
         function sendMessage() {
@@ -1223,14 +1439,13 @@ def index():
             const message = input.value.trim();
             
             if (!message) {
-                alert('الرجاء إدخال رسالة');
+                showNotification('الرجاء إدخال رسالة');
                 return;
             }
             
             isProcessing = true;
             document.getElementById('sendBtn').disabled = true;
             document.getElementById('typingIndicator').innerHTML = '<i class="fas fa-spinner fa-pulse"></i> جاري التفكير...';
-            document.getElementById('stopGenerationBtn').style.display = 'flex';
             
             document.getElementById('welcomeMessage').style.display = 'none';
             displayUserMessage(message);
@@ -1244,18 +1459,19 @@ def index():
             document.getElementById('messagesContainer').appendChild(loadingClone);
             scrollToBottom();
             
-            // استخدام الـ streaming
-            currentEventSource = new EventSource(`/api/chat/stream?message=${encodeURIComponent(message)}`);
+            // استخدام الـ streaming للسرعة
+            const eventSource = new EventSource(`/api/chat/stream?message=${encodeURIComponent(message)}`);
             let fullResponse = '';
             let messageDiv = null;
             
-            currentEventSource.onmessage = function(e) {
+            eventSource.onmessage = function(e) {
                 const data = JSON.parse(e.data);
                 
                 // إزالة مؤشر التحميل
                 document.querySelector('.loading-dots')?.closest('.message')?.remove();
                 
                 if (data.chunk) {
+                    // إنشاء أو تحديث رسالة المساعد
                     if (!messageDiv) {
                         const template = document.getElementById('assistantMessageTemplate');
                         const clone = template.content.cloneNode(true);
@@ -1272,6 +1488,12 @@ def index():
                     
                     if (typeof marked !== 'undefined') {
                         messageText.innerHTML = DOMPurify.sanitize(marked.parse(fullResponse));
+                        // تطبيق التلوين على الأكواد الجديدة
+                        messageText.querySelectorAll('pre code').forEach((block) => {
+                            if (typeof hljs !== 'undefined') {
+                                hljs.highlightElement(block);
+                            }
+                        });
                     } else {
                         messageText.textContent = fullResponse;
                     }
@@ -1280,19 +1502,21 @@ def index():
                 }
                 
                 if (data.done) {
-                    currentEventSource.close();
-                    currentEventSource = null;
+                    eventSource.close();
                     isProcessing = false;
                     document.getElementById('sendBtn').disabled = false;
                     document.getElementById('typingIndicator').innerHTML = '';
-                    document.getElementById('stopGenerationBtn').style.display = 'none';
-                    loadConversations();
+                    loadConversations(); // تحديث القائمة
                 }
             };
             
-            currentEventSource.onerror = function() {
-                stopGeneration();
-                alert('حدث خطأ في الاتصال');
+            eventSource.onerror = function() {
+                eventSource.close();
+                isProcessing = false;
+                document.getElementById('sendBtn').disabled = false;
+                document.getElementById('typingIndicator').innerHTML = '';
+                document.querySelector('.loading-dots')?.closest('.message')?.remove();
+                showNotification('حدث خطأ في الاتصال');
             };
         }
 
@@ -1309,52 +1533,14 @@ def index():
                 });
         }
 
-        function renameConversation(conversationId) {
-            const newName = prompt('أدخل الاسم الجديد للمحادثة:');
-            if (newName) {
-                // هنا يمكن إضافة طلب لتغيير الاسم
-                alert('سيتم إضافة هذه الميزة قريباً');
-            }
-        }
-
-        function deleteConversation(conversationId) {
-            if (confirm('هل أنت متأكد من حذف هذه المحادثة؟')) {
-                fetch(`/api/conversation/${conversationId}`, { method: 'DELETE' })
-                    .then(() => {
-                        if (currentConversationId === conversationId) {
-                            newConversation();
-                        }
-                        loadConversations();
-                    });
-            }
-        }
-
-        function clearAllConversations() {
-            if (confirm('هل أنت متأكد من مسح جميع المحادثات؟')) {
-                fetch('/api/conversations', { method: 'DELETE' })
-                    .then(() => {
-                        newConversation();
-                    });
-            }
-        }
-
         function copyMessage(button) {
             const text = button.closest('.message-content').querySelector('.message-text').innerText;
             navigator.clipboard.writeText(text).then(() => {
-                alert('تم نسخ الرسالة');
+                showNotification('تم نسخ الرسالة');
             });
         }
 
         function copyCode(button) {
-            const code = button.closest('.code-header').nextElementSibling?.querySelector('code')?.innerText;
-            if (code) {
-                navigator.clipboard.writeText(code).then(() => {
-                    alert('تم نسخ الكود');
-                });
-            }
-        }
-
-        function copyAllCode(button) {
             const messageDiv = button.closest('.message');
             const codeBlocks = messageDiv.querySelectorAll('pre code');
             if (codeBlocks.length > 0) {
@@ -1363,8 +1549,10 @@ def index():
                     allCode += block.textContent + '\\n\\n';
                 });
                 navigator.clipboard.writeText(allCode).then(() => {
-                    alert(`تم نسخ ${codeBlocks.length} كود`);
+                    showNotification('تم نسخ كل الأكواد');
                 });
+            } else {
+                copyMessage(button);
             }
         }
 
@@ -1380,29 +1568,6 @@ def index():
                 document.getElementById('messageInput').value = userMessage;
                 sendMessage();
             }
-        }
-
-        function setLanguage(lang) {
-            const prompts = {
-                'python': 'اكتب مشروع بايثون متكامل مع شرح تفصيلي جداً (5000 سطر على الأقل)',
-                'javascript': 'اكتب تطبيق جافاسكريبت متكامل مع شرح مفصل (4000 سطر على الأقل)',
-                'java': 'اكتب برنامج جافا متكامل مع شرح تفصيلي (5000 سطر على الأقل)',
-                'cpp': 'اكتب برنامج C++ متكامل مع شرح مفصل (4000 سطر على الأقل)',
-                'csharp': 'اكتب برنامج C# متكامل مع شرح تفصيلي (4000 سطر على الأقل)',
-                'php': 'اكتب تطبيق PHP متكامل مع شرح مفصل (3000 سطر على الأقل)',
-                'ruby': 'اكتب برنامج Ruby متكامل مع شرح تفصيلي (3000 سطر على الأقل)',
-                'go': 'اكتب برنامج Go متكامل مع شرح مفصل (3000 سطر على الأقل)',
-                'rust': 'اكتب برنامج Rust متكامل مع شرح تفصيلي (3000 سطر على الأقل)',
-                'swift': 'اكتب تطبيق Swift متكامل مع شرح مفصل (3000 سطر على الأقل)',
-                'kotlin': 'اكتب برنامج Kotlin متكامل مع شرح تفصيلي (3000 سطر على الأقل)',
-                'typescript': 'اكتب تطبيق TypeScript متكامل مع شرح مفصل (3000 سطر على الأقل)',
-                'html': 'اكتب موقع HTML/CSS متكامل مع JavaScript (3000 سطر على الأقل)',
-                'sql': 'اكتب قاعدة بيانات SQL متكاملة مع استعلامات معقدة (2000 سطر على الأقل)',
-                'r': 'اكتب برنامج R متكامل لتحليل البيانات (2000 سطر على الأقل)'
-            };
-            
-            document.getElementById('messageInput').value = prompts[lang] || prompts['python'];
-            document.getElementById('messageInput').focus();
         }
 
         function setQuestion(question) {
@@ -1434,40 +1599,157 @@ def index():
 </html>
     ''')
 
-# إضافة مسارات API جديدة
-@app.route('/api/conversations', methods=['DELETE'])
-def delete_all_conversations():
-    """مسح جميع المحادثات"""
-    session_id = session.get('conversation_id')
-    if session_id:
-        conversations[session_id] = []
-    return jsonify({'success': True})
+@app.route('/api/chat/stream')
+def chat_stream():
+    """نقطة نهاية محسنة للمحادثة المتدفقة"""
+    message = request.args.get('message', '').strip()
+    conversation_id = session.get('conversation_id')
+    
+    if not message:
+        return jsonify({'error': 'الرجاء إدخال رسالة'}), 400
+    
+    def generate():
+        # تخزين رسالة المستخدم
+        user_message = {
+            'role': 'user',
+            'content': message,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        if conversation_id not in conversations:
+            conversations[conversation_id] = []
+        
+        conversations[conversation_id].append(user_message)
+        
+        # تحضير الرسائل للنموذج
+        messages_for_api = [
+            {'role': msg['role'], 'content': msg['content']}
+            for msg in conversations[conversation_id]
+        ]
+        
+        full_response = ""
+        
+        # توليد الرد المتدفق بسرعة
+        for chunk in generate_stream_response(messages_for_api):
+            full_response += chunk
+            yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+        
+        # تخزين الرد الكامل
+        assistant_message = {
+            'role': 'assistant',
+            'content': full_response,
+            'timestamp': datetime.now().isoformat()
+        }
+        conversations[conversation_id].append(assistant_message)
+        
+        yield f"data: {json.dumps({'done': True})}\n\n"
+    
+    response = Response(generate(), mimetype='text/event-stream')
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'
+    return response
 
-@app.route('/api/conversation/<conversation_id>', methods=['DELETE'])
-def delete_conversation(conversation_id):
-    """حذف محادثة محددة"""
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    """نقطة نهاية API للمحادثة"""
+    try:
+        data = request.json
+        message = data.get('message', '').strip()
+        conversation_id = session.get('conversation_id')
+        
+        if not message:
+            return jsonify({'error': 'الرجاء إدخال رسالة'}), 400
+        
+        # تخزين رسالة المستخدم
+        user_message = {
+            'role': 'user',
+            'content': message,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        if conversation_id not in conversations:
+            conversations[conversation_id] = []
+        
+        conversations[conversation_id].append(user_message)
+        
+        # تحضير الرسائل للنموذج
+        messages_for_api = [
+            {'role': msg['role'], 'content': msg['content']}
+            for msg in conversations[conversation_id]
+        ]
+        
+        # توليد الرد
+        full_response = ""
+        for chunk in generate_stream_response(messages_for_api):
+            full_response += chunk
+        
+        # تخزين رد المساعد
+        assistant_message = {
+            'role': 'assistant',
+            'content': full_response,
+            'timestamp': datetime.now().isoformat()
+        }
+        conversations[conversation_id].append(assistant_message)
+        
+        return jsonify({
+            'success': True,
+            'response': full_response,
+            'timestamp': assistant_message['timestamp']
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/conversations', methods=['GET'])
+def list_conversations():
+    """قائمة بكل المحادثات"""
+    conv_list = []
+    for conv_id, messages in conversations.items():
+        if messages:
+            first_msg = messages[0]['content']
+            conv_list.append({
+                'id': conv_id,
+                'preview': first_msg[:40] + '...' if len(first_msg) > 40 else first_msg,
+                'timestamp': messages[0]['timestamp'],
+                'message_count': len(messages) // 2
+            })
+    
+    # ترتيب من الأحدث
+    sorted_list = sorted(conv_list, key=lambda x: x['timestamp'], reverse=True)
+    return jsonify(sorted_list)
+
+@app.route('/api/conversations', methods=['POST'])
+def create_conversation():
+    """إنشاء محادثة جديدة"""
+    new_id = str(uuid.uuid4())
+    conversations[new_id] = []
+    session['conversation_id'] = new_id
+    return jsonify({'success': True, 'id': new_id})
+
+@app.route('/api/conversation/<conversation_id>', methods=['GET'])
+def get_conversation(conversation_id):
+    """استرجاع محادثة محددة"""
     if conversation_id in conversations:
-        del conversations[conversation_id]
-    return jsonify({'success': True})
+        return jsonify({'messages': conversations[conversation_id]})
+    return jsonify({'messages': []})
 
-@app.route('/api/chat/stop', methods=['POST'])
-def stop_chat():
-    """توقيف الإجابة"""
+@app.route('/api/clear', methods=['POST'])
+def clear_conversation():
+    """مسح المحادثة الحالية"""
+    conversation_id = session.get('conversation_id')
+    if conversation_id in conversations:
+        conversations[conversation_id] = []
     return jsonify({'success': True})
 
 if __name__ == '__main__':
     print("="*80)
-    print("🚀 Soft Atlas AI - الإصدار الفائق")
+    print("🚀 Soft Atlas AI - المساعد الذكي الفائق")
     print("="*80)
-    print("📡 الخادم: http://localhost:5000")
-    print("🤖 الميزات الجديدة:")
-    print("  ✓ توقيف الإجابة في أي وقت")
-    print("  ✓ وضع نهاري/ليلي")
-    print("  ✓ سجل مخفي بزر صغير")
-    print("  ✓ دعم 50+ لغة برمجة")
-    print("  ✓ إجابات حتى 5000 سطر")
-    print("  ✓ تعديل وحذف المحادثات")
-    print("  ✓ تصميم عصري صغير")
+    print(f"📡 الخادم: http://localhost:5000")
+    print(f"🤖 النموذج: Qwen 3.5 122B (122 مليار معامل)")
+    print(f"⚡ الميزات: سرعة فائقة | إجابات طويلة جداً | معالجة متقدمة للأكواد")
+    print(f"🎨 التصميم: حديث | متجاوب | أنيميشن متقدم")
+    print(f"🔑 مفتاح API: ✓ نشط")
     print("="*80)
     print("✅ افتح المتصفح على: http://localhost:5000")
     print("="*80)
