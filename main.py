@@ -30,7 +30,7 @@ def generate_professional_response(messages, session_id):
     
     system_prompt = {
         "role": "system",
-        "content": """أنت Abdo AI Pro - خبير محترف في جميع المجالات.
+        "content": """أنت Abdo AI Pro  - خبير محترف في جميع المجالات.
 
 القواعد الذهبية للإجابات الاحترافية:
 
@@ -1096,7 +1096,7 @@ def index():
                             <i class="fas fa-robot"></i>
                         </div>
                         <h1>Abdo AI Pro</h1>
-                        <p>مساعدك الخاص - محادثاتك محفوظة في متصفحك فقط</p>
+                        <p>مساعدك الخاص - محادثاتك محفوظة على متصفحك فقط</p>
                         
                         <div class="features-grid">
                             <div class="feature-card">
