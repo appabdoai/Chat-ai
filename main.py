@@ -14,7 +14,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or 'your-secret-key-here'
 
 # إعدادات NVIDIA API
-NVIDIA_API_KEY = "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"
+NVIDIA_API_KEY = "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"
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 MODEL_NAME = "qwen/qwen3.5-122b-a10b"
 
@@ -129,7 +129,7 @@ def index():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Abdo AI pro - الخبير المحترف</title>
+    <title>Abdo AI Pro - الخبير المحترف</title>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
@@ -1868,4 +1868,3 @@ if __name__ == '__main__':
     print("="*80)
     
     app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
-
