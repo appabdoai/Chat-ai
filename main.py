@@ -12,27 +12,18 @@ load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or 'your-secret-key-here'
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['SESSION_PERMANENT'] = False
+app.config['SESSION_USE_SIGNER'] = True
+app.config['SESSION_KEY_PREFIX'] = 'abdo_ai_'
 
 # إعدادات NVIDIA API
 NVIDIA_API_KEY = "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"
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 MODEL_NAME = "qwen/qwen3.5-122b-a10b"
 
-# تخزين المحادثات لكل جلسة والتدفقات النشطة
-all_conversations = {}
+# تخزين التدفقات النشطة فقط (هذا عام لأن التدفقات مؤقتة)
 active_streams = {}
-
-def get_user_conversations():
-    """الحصول على محادثات المستخدم الحالي"""
-    session_id = session.get('session_id')
-    if not session_id:
-        session_id = str(uuid.uuid4())
-        session['session_id'] = session_id
-    
-    if session_id not in all_conversations:
-        all_conversations[session_id] = {}
-    
-    return all_conversations[session_id]
 
 def generate_professional_response(messages, stream_id):
     """توليد ردود احترافية كاملة بدون تقطع"""
@@ -128,13 +119,34 @@ def generate_professional_response(messages, stream_id):
     except Exception as e:
         yield f"❌ خطأ: {str(e)}"
 
+def get_user_conversations():
+    """الحصول على محادثات المستخدم الحالي من الجلسة"""
+    if 'conversations' not in session:
+        session['conversations'] = {}
+    return session['conversations']
+
+def get_current_conversation():
+    """الحصول على المحادثة الحالية للمستخدم"""
+    conversations = get_user_conversations()
+    current_id = session.get('current_conversation_id')
+    
+    if not current_id or current_id not in conversations:
+        current_id = str(uuid.uuid4())
+        conversations[current_id] = []
+        session['current_conversation_id'] = current_id
+        session.modified = True
+    
+    return conversations[current_id], current_id
+
 @app.route('/')
 def index():
     """الصفحة الرئيسية - التصميم المحترف النهائي"""
-    if 'conversation_id' not in session:
-        session['conversation_id'] = str(uuid.uuid4())
-        user_convs = get_user_conversations()
-        user_convs[session['conversation_id']] = []
+    # التأكد من وجود معرف محادثة للمستخدم
+    conversations = get_user_conversations()
+    if 'current_conversation_id' not in session or session['current_conversation_id'] not in conversations:
+        session['current_conversation_id'] = str(uuid.uuid4())
+        conversations[session['current_conversation_id']] = []
+        session.modified = True
     
     return render_template_string('''
 <!DOCTYPE html>
@@ -150,6 +162,7 @@ def index():
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
     <style>
+        /* نفس التصميم السابق تماماً - لم يتغير شيء */
         * {
             margin: 0;
             padding: 0;
@@ -1243,7 +1256,7 @@ def index():
     
     <script>
         // المتغيرات العامة
-        let currentConversationId = '{{ session.conversation_id }}';
+        let currentConversationId = '{{ session.current_conversation_id }}';
         let isProcessing = false;
         let currentStreamId = null;
         let currentTheme = 'dark';
@@ -1452,8 +1465,9 @@ def index():
                         if (data.success) {
                             if (conversationId === currentConversationId) {
                                 newConversation();
+                            } else {
+                                loadConversations();
                             }
-                            loadConversations();
                         }
                     });
             }
@@ -1741,11 +1755,17 @@ def index():
 def chat_stream():
     """نقطة نهاية التدفق المحسنة"""
     message = request.args.get('message', '').strip()
-    conversation_id = session.get('conversation_id')
+    conversation_id = session.get('current_conversation_id')
     stream_id = request.args.get('stream_id', str(uuid.uuid4()))
     
     if not message:
         return jsonify({'error': 'الرجاء إدخال رسالة'}), 400
+    
+    # الحصول على محادثات المستخدم
+    conversations = get_user_conversations()
+    
+    if conversation_id not in conversations:
+        conversations[conversation_id] = []
     
     active_streams[stream_id] = {'stopped': False}
     
@@ -1757,15 +1777,12 @@ def chat_stream():
                 'timestamp': datetime.now().isoformat()
             }
             
-            user_convs = get_user_conversations()
-            if conversation_id not in user_convs:
-                user_convs[conversation_id] = []
-            
-            user_convs[conversation_id].append(user_message)
+            conversations[conversation_id].append(user_message)
+            session.modified = True
             
             messages_for_api = [
                 {'role': msg['role'], 'content': msg['content']}
-                for msg in user_convs[conversation_id]
+                for msg in conversations[conversation_id]
             ]
             
             full_response = ""
@@ -1793,7 +1810,8 @@ def chat_stream():
                     'content': full_response,
                     'timestamp': datetime.now().isoformat()
                 }
-                user_convs[conversation_id].append(assistant_message)
+                conversations[conversation_id].append(assistant_message)
+                session.modified = True
             
             yield f"data: {json.dumps({'done': True})}\n\n"
             
@@ -1820,10 +1838,11 @@ def stop_chat():
 
 @app.route('/api/conversations', methods=['GET'])
 def list_conversations():
-    """قائمة المحادثات"""
+    """قائمة المحادثات الخاصة بالمستخدم"""
+    conversations = get_user_conversations()
     conv_list = []
-    user_convs = get_user_conversations()
-    for conv_id, messages in user_convs.items():
+    
+    for conv_id, messages in conversations.items():
         if messages:
             first_msg = messages[0]['content']
             conv_list.append({
@@ -1839,50 +1858,59 @@ def list_conversations():
 @app.route('/api/conversations', methods=['POST'])
 def create_conversation():
     """إنشاء محادثة جديدة"""
+    conversations = get_user_conversations()
     new_id = str(uuid.uuid4())
-    user_convs = get_user_conversations()
-    user_convs[new_id] = []
-    session['conversation_id'] = new_id
+    conversations[new_id] = []
+    session['current_conversation_id'] = new_id
+    session.modified = True
     return jsonify({'success': True, 'id': new_id})
 
 @app.route('/api/conversation/<conversation_id>', methods=['GET'])
 def get_conversation(conversation_id):
     """استرجاع محادثة"""
-    user_convs = get_user_conversations()
-    if conversation_id in user_convs:
-        return jsonify({'messages': user_convs[conversation_id]})
+    conversations = get_user_conversations()
+    if conversation_id in conversations:
+        return jsonify({'messages': conversations[conversation_id]})
     return jsonify({'messages': []})
 
 @app.route('/api/conversation/<conversation_id>', methods=['DELETE'])
 def delete_conversation(conversation_id):
     """حذف محادثة"""
-    user_convs = get_user_conversations()
-    if conversation_id in user_convs:
-        del user_convs[conversation_id]
+    conversations = get_user_conversations()
+    if conversation_id in conversations:
+        del conversations[conversation_id]
+        session.modified = True
+        
+        # إذا كانت المحادثة المحذوفة هي الحالية، ننشئ محادثة جديدة
+        if session.get('current_conversation_id') == conversation_id:
+            new_id = str(uuid.uuid4())
+            conversations[new_id] = []
+            session['current_conversation_id'] = new_id
+            session.modified = True
+        
         return jsonify({'success': True})
     return jsonify({'success': False}), 404
 
 @app.route('/api/clear', methods=['POST'])
 def clear_conversation():
     """مسح المحادثة الحالية"""
-    user_convs = get_user_conversations()
-    conversation_id = session.get('conversation_id')
-    if conversation_id in user_convs:
-        user_convs[conversation_id] = []
+    conversations = get_user_conversations()
+    current_id = session.get('current_conversation_id')
+    
+    if current_id in conversations:
+        conversations[current_id] = []
+        session.modified = True
+    
     return jsonify({'success': True})
 
 if __name__ == '__main__':
     print("="*80)
     print("🚀 Abdo AI Pro - النسخة النهائية المحترفة")
     print("="*80)
-    print("✅ تم حل جميع المشاكل:")
-    print("   • محادثة جديدة تعمل فوراً")
-    print("   • إجابات كاملة بدون تقطع (مع ping للحفاظ على الاتصال)")
-    print("   • جداول وإحصائيات احترافية")
-    print("   • أكواد كاملة مع نسخ")
-    print("   • تحليل من جميع الجوانب")
-    print("   • تصميم محترف متجاوب")
-    print("   • سجل محادثات خاص لكل مستخدم")
+    print("✅ تم إصلاح مشكلة السجل:")
+    print("   • كل مستخدم لديه سجل محادثات خاص به")
+    print("   • المحادثات محفوظة في session لكل متصفح")
+    print("   • لا يمكن لأي مستخدم رؤية محادثات الآخرين")
     print("="*80)
     print("🌐 الخادم: http://localhost:5000")
     print("="*80)
